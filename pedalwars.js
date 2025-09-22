@@ -1,11 +1,3 @@
-<script src="https://harold-street-pedal-company.github.io/Pedal_Wars/pedalwars.js" defer></script>
-  </textarea>
-</div>
-
-<div class="file-block">
-  <h2>🧠 File 2 — pedalwars.js (host as raw JS and reference from File 1)</h2>
-  <div class="file-meta">Save as <code>pedalwars.js</code> in your repo (e.g., <em>https://harold-street-pedal-company.github.io/Pedal_Wars/pedalwars.js</em>). No HTML wrappers.</div>
-  <textarea readonly>
 /* Pedal Wars – external JS bundle for Big Cartel (CSP-safe) */
 (function () {
   // ===== Utilities =====
@@ -346,5 +338,4 @@
   // ===== Self-test (non-invasive) =====
   try { console.assert(typeof log === "function", "log() defined"); console.log("[Pedal Wars] bundle executed"); } catch (e) {}
 })();
-  </textarea>
-</div>
+  
