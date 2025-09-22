@@ -200,7 +200,31 @@
   function travel(dest){ if(!dest){ log('Pick a destination first.','warn'); return; } if(dest===state.location){ log('You are already there.','warn'); return; } const cost=travelCostFor(dest); if(state.cash<cost){ log('Travel costs '+fmt(cost)+'. You need more cash.','bad'); return; } addCash(-cost); const from=LOCATIONS.find(l=>l.id===state.location).name; const to=LOCATIONS.find(l=>l.id===dest).name; state.location=dest; log('Traveled '+from+' → '+to+' ('+(cost?('cost '+fmt(cost)):'free')+')', cost?'warn':'good'); const n=2+Math.floor(mulberry32((Date.now()>>>0))()*2); for(let i=0;i<n;i++) travelEvent(); renderAll(); }
   function travelEvent(){ const r=mulberry32(((Date.now()%1e9)+Math.floor(rng()*1e9))>>>0)(); if(r<0.20){ const gain=Math.floor(50+r*250); addCash(gain); log('Scored a pop-up flip on arrival: +'+fmt(gain)+'.','good'); } else if(r<0.40){ const loss=Math.min(state.cash,Math.floor(30+r*200)); addCash(-loss); log('Road fees hit: −'+fmt(loss)+'.','bad'); } else if(r<0.60){ bumpRep(+0.02); log('Met a demo artist — reputation up.','good'); } else if(r<0.75){ const interest=Math.floor(state.debt*0.001*(1+Math.floor(r*3))); adjustDebt(+interest); log('Travel delays increased costs: +'+fmt(interest)+' debt.','warn'); } else if(r<0.90){ const refund=Math.floor(20+r*120); addCash(refund); log('Returned a defective part and got '+fmt(refund)+' back.','good'); } else { bumpRep(-0.015); log('Buyer flaked on meetup — tiny rep hit.','warn'); } }
 
-  function endDay(){ if(state.debt>0){ const daily=state.rate/365; const inc=Math.floor(state.debt*daily); adjustDebt(+inc); if(inc>0) log('Interest accrued '+fmt(inc)+'.','warn'); } const fee=Math.floor(capacityUsed()*2); if(fee>0){ addCash(-fee); log('Storage fees '+fmt(fee)+'.','warn'); } dailyEvent(); if(state.day<DAYS_LIMIT){ state.day++; genPrices(); renderAll(); } else { gameOver(); } }
+  function endDay(){
+    // Guard: one clean increment per click
+    if(!state) return;
+    if(state.day >= DAYS_LIMIT){ gameOver(); return; }
+    const prev = state.day;
+    state.day = prev + 1; // increment FIRST so UI always reflects the new day
+
+    // Daily economics
+    if(state.debt>0){
+      const daily = state.rate/365;
+      const inc = Math.floor(state.debt * daily);
+      adjustDebt(+inc);
+      if(inc>0) log('Interest accrued '+fmt(inc)+'.','warn');
+    }
+    const fee = Math.floor(capacityUsed()*2);
+    if(fee>0){ addCash(-fee); log('Storage fees '+fmt(fee)+'.','warn'); }
+
+    // Events and price change only at end of day
+    dailyEvent();
+    genPrices();
+    renderAll('Day '+prev+' → '+state.day+' complete.');
+
+    // If we just hit the limit, end the game on next press
+    if(state.day >= DAYS_LIMIT){ log('Final day reached. Next press ends the game.','warn'); }
+  }
   function dailyEvent(){ const roll=rng(); if(roll<0.20){ bumpRep(+0.02); footer('Hype building…'); } else if(roll<0.35){ bumpRep(-0.01); footer('Market feels soft.'); } else if(roll<0.45){ const loss=Math.min(state.cash, Math.floor(50+rng()*200)); addCash(-loss); bumpRep(-0.015); footer('Account took a ding.'); } else if(roll<0.55){ const owned=ITEMS.filter(i=>state.inv[i.id]>0); if(owned.length){ const it=pick(owned); const take=Math.max(1,Math.floor(state.inv[it.id]*(0.25+rng()*0.5))); state.inv[it.id]=Math.max(0,state.inv[it.id]-take); footer('Paperwork error.'); } } else if(roll<0.70){ footer('Buzz is in the air.'); } else { footer('Quiet day.'); } }
   function footer(text){ gi('eventFooter').textContent=text; }
 
