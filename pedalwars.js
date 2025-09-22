@@ -17,14 +17,8 @@
   const pick = (arr) => arr[Math.floor(rng() * arr.length)];
   function log(msg, kind) {
     const ul = gi("log");
-    if (!ul) {
-      console.log("[Pedal Wars]", kind ? "[" + kind + "]" : "", msg);
-      return;
-    }
-    const li = document.createElement("li");
-    if (kind) li.className = kind;
-    li.textContent = msg;
-    ul.prepend(li);
+    if (!ul) { console.log("[Pedal Wars]", kind ? "[" + kind + "]" : "", msg); return; }
+    const li = document.createElement("li"); if (kind) li.className = kind; li.textContent = msg; ul.prepend(li);
   }
 
   // ===== Data =====
@@ -38,36 +32,11 @@
     { id: "kit", name: "DIY Kit", base: [45, 160], weight: 1 },
   ];
   const LOCATIONS = [
-    {
-      id: "hamilton",
-      name: "Hamilton",
-      flavor: "Local scene, steady buyers",
-      bias: { overdrive: 0.95, fuzz: 0.9, kit: 0.9 },
-    },
-    {
-      id: "toronto",
-      name: "Toronto",
-      flavor: "Big market, hype spikes",
-      bias: { delay: 1.1, reverb: 1.1, mod: 1.05 },
-    },
-    {
-      id: "montreal",
-      name: "Montreal",
-      flavor: "Trendy boutique tastes",
-      bias: { synth: 1.15, mod: 1.1 },
-    },
-    {
-      id: "nash",
-      name: "Nashville",
-      flavor: "Session demand, good money",
-      bias: { overdrive: 1.1, delay: 1.1, reverb: 1.05 },
-    },
-    {
-      id: "reverb",
-      name: "Reverb.com",
-      flavor: "Online—fees & scams",
-      bias: { all: 1.0 },
-    },
+    { id: "hamilton", name: "Hamilton", flavor: "Local scene, steady buyers", bias: { overdrive: 0.95, fuzz: 0.9, kit: 0.9 } },
+    { id: "toronto", name: "Toronto", flavor: "Big market, hype spikes", bias: { delay: 1.1, reverb: 1.1, mod: 1.05 } },
+    { id: "montreal", name: "Montreal", flavor: "Trendy boutique tastes", bias: { synth: 1.15, mod: 1.1 } },
+    { id: "nash", name: "Nashville", flavor: "Session demand, good money", bias: { overdrive: 1.1, delay: 1.1, reverb: 1.05 } },
+    { id: "reverb", name: "Reverb.com", flavor: "Online—fees & scams", bias: { all: 1.0 } },
   ];
 
   // ===== State =====
@@ -78,67 +47,44 @@
   (function buildSelect() {
     const sel = gi("locationSelect");
     if (!sel || sel.options.length) return;
-    LOCATIONS.forEach((l) => {
-      const o = document.createElement("option");
-      o.value = l.id;
-      o.textContent = l.name;
-      sel.appendChild(o);
-    });
+    LOCATIONS.forEach((l) => { const o = document.createElement("option"); o.value = l.id; o.textContent = l.name; sel.appendChild(o); });
   })();
 
-  // Robust start button wiring (DOM ready + delegation fallback)
+  // Robust start button wiring (direct + delegated with closest)
   function bindStartButtons() {
     const qb = gi("quickBtn"), nb = gi("normalBtn");
-    if (qb) qb.addEventListener("click", () => ((DAYS_LIMIT = 7), startGame()));
-    if (nb) nb.addEventListener("click", () => ((DAYS_LIMIT = 30), startGame()));
-    // Delegation in case theme swaps DOM
+    if (qb) qb.addEventListener("click", onStartQuick);
+    if (nb) nb.addEventListener("click", onStartNormal);
     document.addEventListener("click", (e) => {
-      const t = e.target;
-      if (!(t instanceof HTMLElement)) return;
-      if (t.id === "quickBtn") { DAYS_LIMIT = 7; startGame(); }
-      else if (t.id === "normalBtn") { DAYS_LIMIT = 30; startGame(); }
+      const el = e && e.target && e.target.closest ? e.target.closest("#quickBtn, #normalBtn") : null;
+      if (!el) return;
+      if (el.id === "quickBtn") onStartQuick();
+      else if (el.id === "normalBtn") onStartNormal();
     });
-    console.log("[Pedal Wars] start buttons wired");
+    console.log("[Pedal Wars] start buttons wired", { haveQuick: !!qb, haveNormal: !!nb, readyState: document.readyState });
+    function onStartQuick(){ DAYS_LIMIT = 7;  startGame(); }
+    function onStartNormal(){ DAYS_LIMIT = 30; startGame(); }
   }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", bindStartButtons, { once: true });
-  } else {
-    bindStartButtons();
-  }
+  if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", bindStartButtons, { once: true }); }
+  else { bindStartButtons(); }
 
   // ===== Start Game =====
   function startGame() {
     if (state) return; // prevent double-start + double prompt
     const name = (prompt("Enter player name:", "Player") || "Player").trim().slice(0, 16);
     state = initState(name);
-    gi("startOverlay").style.display = "none";
-    gi("gameControls").style.display = "flex";
+    const ov = gi("startOverlay"); if (ov) ov.style.display = "none";
+    const gc = gi("gameControls"); if (gc) gc.style.display = "flex";
     genPrices();
     renderAll("New game started.");
   }
   function initState(playerName) {
-    return {
-      day: 1,
-      location: "hamilton",
-      cash: 1500,
-      debt: 1000,
-      rate: 0.18,
-      rep: 0.1,
-      cap: 24,
-      inv: Object.fromEntries(ITEMS.map((i) => [i.id, 0])),
-      prices: {},
-      lastPrices: {},
-      playerName,
-    };
+    return { day: 1, location: "hamilton", cash: 1500, debt: 1000, rate: 0.18, rep: 0.1, cap: 24,
+             inv: Object.fromEntries(ITEMS.map((i) => [i.id, 0])), prices: {}, lastPrices: {}, playerName };
   }
 
   // ===== Render =====
-  function renderAll(msg) {
-    renderStats();
-    renderMarket();
-    renderTravelCosts();
-    if (msg) log(msg);
-  }
+  function renderAll(msg) { renderStats(); renderMarket(); renderTravelCosts(); if (msg) log(msg); }
   function renderStats() {
     const used = Object.values(state.inv).reduce((a, b) => a + b, 0);
     gi("day").textContent = `${state.day}/${DAYS_LIMIT}`;
@@ -153,14 +99,10 @@
     gi("repMeter").style.width = Math.round(state.rep * 100) + "%";
   }
   function renderMarket() {
-    const tb = gi("marketBody");
-    tb.innerHTML = "";
+    const tb = gi("marketBody"); tb.innerHTML = "";
     ITEMS.forEach((it) => {
-      const owned = state.inv[it.id] || 0;
-      const p = state.prices[it.id];
-      const last = state.lastPrices[it.id] || p;
-      const delta = p - last;
-      const cls = delta > 0 ? "price up" : delta < 0 ? "price down" : "";
+      const owned = state.inv[it.id] || 0; const p = state.prices[it.id]; const last = state.lastPrices[it.id] || p;
+      const delta = p - last; const cls = delta > 0 ? "price up" : delta < 0 ? "price down" : "";
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td align="left"><strong>${it.name}</strong><br/><small>Weight ${it.weight}</small></td>
@@ -183,12 +125,9 @@
     });
     tb.querySelectorAll("button[data-act]").forEach((btn) => {
       btn.onclick = () => {
-        const id = btn.getAttribute("data-id");
-        const act = btn.getAttribute("data-act");
+        const id = btn.getAttribute("data-id"); const act = btn.getAttribute("data-act");
         const qty = parseInt((gi((act === "buy" ? "b_" : "s_") + id).value) || 0, 10);
-        if (qty <= 0) return;
-        if (act === "buy") buy(id, qty);
-        else sell(id, qty);
+        if (qty <= 0) return; if (act === "buy") buy(id, qty); else sell(id, qty);
       };
     });
   }
@@ -218,8 +157,7 @@
     if (state?.debt <= 0) { log("No debt to repay.", "warn"); return; }
     if (state.cash <= 0) { log("No cash to repay.", "bad"); return; }
     const pay = Math.min(500, state.debt, state.cash);
-    adjustDebt(-pay); addCash(-pay);
-    log("Repaid " + fmt(pay) + ".", "good"); renderStats();
+    adjustDebt(-pay); addCash(-pay); log("Repaid " + fmt(pay) + ".", "good"); renderStats();
   };
 
   function buy(id, qty) {
@@ -298,13 +236,9 @@
   function endDay() {
     if (!state) return;
     if (state.day >= DAYS_LIMIT) { gameOver(); return; }
-    const prev = state.day; state.day = prev + 1; // increment first
-    if (state.debt > 0) {
-      const daily = state.rate / 365; const inc = Math.floor(state.debt * daily);
-      adjustDebt(+inc); if (inc > 0) log("Interest accrued " + fmt(inc) + ".", "warn");
-    }
-    const fee = Math.floor(capacityUsed() * 2);
-    if (fee > 0) { addCash(-fee); log("Storage fees " + fmt(fee) + ".", "warn"); }
+    const prev = state.day; state.day = prev + 1; // increment first for visible tick
+    if (state.debt > 0) { const daily = state.rate / 365; const inc = Math.floor(state.debt * daily); adjustDebt(+inc); if (inc > 0) log("Interest accrued " + fmt(inc) + ".", "warn"); }
+    const fee = Math.floor(capacityUsed() * 2); if (fee > 0) { addCash(-fee); log("Storage fees " + fmt(fee) + ".", "warn"); }
     dailyEvent(); genPrices(); renderAll("Day " + prev + " → " + state.day + " complete.");
     if (state.day >= DAYS_LIMIT) { log("Final day reached. Next press ends the game.", "warn"); }
   }
