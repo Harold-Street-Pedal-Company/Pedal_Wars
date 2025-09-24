@@ -14,7 +14,9 @@
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
-  let seed = Date.now() % 2147483647;
+  function hashStr(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; }
+
+  let seed = Date.now() % 2147483647; // game seed basis
   let rng = mulberry32(seed);
   const pick = (arr) => arr[Math.floor(rng() * arr.length)];
   function log(msg, kind) {
@@ -26,24 +28,26 @@
   // ===== Data =====
   const ITEMS = [
     { id: "overdrive", name: "Overdrive", base: [90, 220], weight: 1 },
-    { id: "fuzz", name: "Fuzz", base: [60, 260], weight: 1 },
-    { id: "delay", name: "Delay", base: [180, 520], weight: 2 },
-    { id: "reverb", name: "Reverb", base: [150, 560], weight: 2 },
-    { id: "mod", name: "Modulation", base: [120, 380], weight: 1 },
-    { id: "synth", name: "Synth/Weird", base: [220, 740], weight: 2 },
-    { id: "kit", name: "DIY Kit", base: [45, 160], weight: 1 },
+    { id: "fuzz",      name: "Fuzz",      base: [60, 260], weight: 1 },
+    { id: "delay",     name: "Delay",     base: [180, 520], weight: 2 },
+    { id: "reverb",    name: "Reverb",    base: [150, 560], weight: 2 },
+    { id: "mod",       name: "Modulation",base: [120, 380], weight: 1 },
+    { id: "synth",     name: "Synth/Weird", base: [220, 740], weight: 2 },
+    { id: "kit",       name: "DIY Kit",   base: [45, 160], weight: 1 },
   ];
   const LOCATIONS = [
-    { id: "hamilton", name: "Hamilton", flavor: "Local scene, steady buyers", bias: { overdrive: 0.95, fuzz: 0.9, kit: 0.9 } },
-    { id: "toronto", name: "Toronto", flavor: "Big market, hype spikes", bias: { delay: 1.1, reverb: 1.1, mod: 1.05 } },
-    { id: "montreal", name: "Montreal", flavor: "Trendy boutique tastes", bias: { synth: 1.15, mod: 1.1 } },
-    { id: "nash", name: "Nashville", flavor: "Session demand, good money", bias: { overdrive: 1.1, delay: 1.1, reverb: 1.05 } },
-    { id: "reverb", name: "Reverb.com", flavor: "Online—fees & scams", bias: { all: 1.0 } },
+    { id: "hamilton", name: "Hamilton",  flavor: "Local scene, steady buyers", bias: { overdrive: 0.95, fuzz: 0.9, kit: 0.9 } },
+    { id: "toronto",  name: "Toronto",   flavor: "Big market, hype spikes",    bias: { delay: 1.1, reverb: 1.1, mod: 1.05 } },
+    { id: "montreal", name: "Montreal",  flavor: "Trendy boutique tastes",     bias: { synth: 1.15, mod: 1.1 } },
+    { id: "nash",     name: "Nashville", flavor: "Session demand, good money", bias: { overdrive: 1.1, delay: 1.1, reverb: 1.05 } },
+    { id: "reverb",   name: "Reverb.com",flavor: "Online—fees & scams",        bias: { all: 1.0 } },
   ];
 
   // ===== State =====
   let DAYS_LIMIT = 30;
   let state = null;
+  // Cache of computed prices per (day->location->itemId)
+  let dailyCache = {}; // { [day]: { [locId]: { itemId: price } } }
 
   // Build location select ASAP (safe even if called before start)
   (function buildSelect() {
@@ -57,7 +61,6 @@
     const qb = gi("quickBtn"), nb = gi("normalBtn");
     if (qb) qb.addEventListener("click", onStartQuick);
     if (nb) nb.addEventListener("click", onStartNormal);
-    // Delegation (handles nested spans or theme swaps) but only inside our root
     document.addEventListener("click", (e) => {
       if (!root.contains(e.target)) return;
       const el = e && e.target && e.target.closest ? e.target.closest("#quickBtn, #normalBtn") : null;
@@ -71,6 +74,52 @@
   if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", bindStartButtons, { once: true }); }
   else { bindStartButtons(); }
 
+  // ===== Deterministic pricing per (day, location) =====
+  function priceRNG(day, locId){
+    // combine the game seed, day, and location to create a stable per-day/per-location generator
+    const s = (seed ^ (day * 2654435761) ^ hashStr(String(locId))) >>> 0;
+    return mulberry32(s);
+  }
+  function computePricesFor(day, locId) {
+    const loc = LOCATIONS.find(l => l.id === locId) || LOCATIONS[0];
+    const prng = priceRNG(day, locId);
+    // choose 1–2 shock items for the day at this location
+    const shockCount = prng() < 0.55 ? 1 : 2;
+    const shockIdxs = new Set();
+    while (shockIdxs.size < shockCount) shockIdxs.add(Math.floor(prng() * ITEMS.length));
+
+    const repBoost = 1 + (state ? state.rep * 0.1 : 0); // rep lowers prices a touch
+
+    const map = {};
+    ITEMS.forEach((it, idx) => {
+      const [lo, hi] = it.base;
+      const bias = (loc.bias && (loc.bias[it.id] || loc.bias.all)) || 1;
+      // smooth random in [0,1] around mid
+      const roll = (prng() + prng() + prng()) / 3;
+      // base within item range
+      let price = (lo + (hi - lo) * roll) * bias;
+      // normal daily volatility: ~ -10%..+20%
+      price *= (0.9 + prng() * 0.3);
+      // occasional shock
+      if (shockIdxs.has(idx)) {
+        if (prng() < 0.5) { // spike
+          price *= (1.6 + prng() * 0.6);  // 1.6x..2.2x
+        } else {            // crash
+          price *= (0.45 + prng() * 0.25); // 0.45x..0.70x
+        }
+      }
+      // rep affects buy price slightly
+      price = Math.round(Math.max(5, price / repBoost));
+      map[it.id] = price;
+    });
+    return map;
+  }
+  function getPricesFor(day, locId){
+    dailyCache[day] ||= {};
+    if (!dailyCache[day][locId]) dailyCache[day][locId] = computePricesFor(day, locId);
+    return dailyCache[day][locId];
+  }
+
   // ===== Start Game =====
   function startGame() {
     if (state) return; // prevent double-start + double prompt
@@ -78,10 +127,15 @@
     state = initState(name);
     const ov = gi("startOverlay"); if (ov) ov.style.display = "none";
     const gc = gi("gameControls"); if (gc) gc.style.display = "flex";
-    genPrices();
+
+    // initialize day-1 prices for starting location; stable during day
+    state.prices     = { ...getPricesFor(state.day, state.location) };
+    state.lastPrices = { ...state.prices };
+
     renderAll("New game started.");
   }
   function initState(playerName) {
+    dailyCache = {}; // new run → fresh cache
     return {
       day: 1, location: "hamilton", cash: 1500, debt: 1000, rate: 0.18, rep: 0.10, cap: 24,
       inv: Object.fromEntries(ITEMS.map((i) => [i.id, 0])),
@@ -144,31 +198,23 @@
     });
   }
 
-  // ===== Economy =====
-  function genPrices() {
-    // Copy current prices first, then compute new ones
-    state.lastPrices = { ...state.prices };
-    const loc = LOCATIONS.find((l) => l.id === state.location);
-    const repBoost = 1 + state.rep * 0.1;
-    ITEMS.forEach((it) => {
-      const [lo, hi] = it.base;
-      const bias = loc.bias?.[it.id] || loc.bias?.all || 1;
-      // Smooth random to avoid wild swings, but ensure movement
-      let roll = (rng() + rng() + rng()) / 3;
-      let price = Math.round((lo + (hi - lo) * roll) * bias);
-      price = Math.round(price * (0.75 + rng() * 0.8));
-      price = Math.round(price / repBoost);
-      price = Math.max(5, price);
-      const prev = state.lastPrices[it.id];
-      // Nudge if unchanged so UI shows a delta
-      if (typeof prev === 'number' && prev === price) {
-        price += (rng() < 0.5 ? -1 : 1);
-        if (price < 5) price = 5;
-      }
-      state.prices[it.id] = price;
-    });
+  // ===== Economy glue (stable within day, change on end day) =====
+  function refreshPricesForCurrentDayAndLocation({compareToPrevDay=false, destLocation=null}={}) {
+    const locId = destLocation || state.location;
+    const todays = getPricesFor(state.day, locId);
+
+    if (compareToPrevDay) {
+      // Compare to previous day (same location) to show daily deltas
+      const prev = getPricesFor(Math.max(1, state.day - 1), locId);
+      state.lastPrices = { ...prev };
+    } else {
+      // Same-day travel or first render: deltas should be 0 (stable)
+      state.lastPrices = { ...todays };
+    }
+    state.prices = { ...todays };
   }
 
+  // ===== Capacity / Cash / Reputation helpers =====
   function capacityUsed() { return Object.values(state.inv).reduce((a, b) => a + b, 0); }
   function addCash(v) { state.cash = Math.max(0, Math.floor(state.cash + v)); }
   function adjustDebt(v) { state.debt = Math.max(0, Math.floor(state.debt + v)); }
@@ -222,7 +268,7 @@
     renderStats(); renderMarket();
   };
 
-  // ===== Travel & Costs (prices DO NOT change on travel) =====
+  // ===== Travel & Costs (prices stable within day; per-location tables) =====
   gi("travelBtn").onclick = () => { travel(gi("locationSelect").value); };
   function travelCostFor(dest) {
     if (dest === "reverb") return 0; // free to Reverb.com
@@ -242,6 +288,10 @@
     const from = LOCATIONS.find((l) => l.id === state.location).name;
     const to = LOCATIONS.find((l) => l.id === dest).name;
     state.location = dest;
+
+    // Same-day travel → keep prices stable (delta = 0)
+    refreshPricesForCurrentDayAndLocation({ compareToPrevDay:false, destLocation:dest });
+
     log("Traveled " + from + " → " + to + " (" + (cost ? "cost " + fmt(cost) : "free") + ")", cost ? "warn" : "good");
     const n = 2 + Math.floor(mulberry32(Date.now() >>> 0)() * 2);
     for (let i = 0; i < n; i++) travelEvent();
@@ -257,12 +307,14 @@
     else { bumpRep(-0.015); log("Buyer flaked on meetup — tiny rep hit.", "warn"); }
   }
 
-  // ===== End Day (prices change here) =====
+  // ===== End Day (recompute per-location tables, show daily deltas) =====
   gi("nextBtn").onclick = endDay;
   function endDay() {
     if (!state) return;
     if (state.day >= DAYS_LIMIT) { gameOver(); return; }
-    const prev = state.day; state.day = prev + 1; // increment first for visible tick
+
+    const prevDay = state.day;
+    state.day = prevDay + 1; // increment first for visible tick
 
     if (state.debt > 0) {
       const daily = state.rate / 365; const inc = Math.floor(state.debt * daily);
@@ -271,16 +323,17 @@
     const fee = Math.floor(capacityUsed() * 2);
     if (fee > 0) { addCash(-fee); log("Storage fees " + fmt(fee) + ".", "warn"); }
 
-    dailyEvent();
-    genPrices();
-    renderAll("Day " + prev + " → " + state.day + " complete.");
+    // New day: rebuild price table for current location and compare vs previous day
+    refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true });
 
-    // --- Force-refresh stats next tick in case the theme mutates DOM after we render ---
-    setTimeout(renderStats, 0);
+    // Daily event after prices are set
+    dailyEvent();
+
+    renderAll("Day " + prevDay + " → " + state.day + " complete.");
+    setTimeout(renderStats, 0); // theme-safety tick
 
     if (state.day >= DAYS_LIMIT) { log("Final day reached. Next press ends the game.", "warn"); }
   }
-
   function dailyEvent() {
     const roll = rng();
     if (roll < 0.2) { bumpRep(+0.02); footer("Hype building…"); }
@@ -301,6 +354,10 @@
       if (!s) { log("No save found.", "warn"); return; }
       const obj = JSON.parse(s);
       DAYS_LIMIT = obj.DAYS_LIMIT || 30; state = obj.state;
+
+      // Rehydrate cache lazily; refresh current view for (day, location)
+      refreshPricesForCurrentDayAndLocation({ compareToPrevDay:false });
+
       const ov = gi("startOverlay"); if (ov) ov.style.display = "none";
       const gc = gi("gameControls"); if (gc) gc.style.display = "flex";
       renderAll("Loaded save.");
@@ -311,7 +368,7 @@
     if (confirm("Reset game?")) {
       try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
       // Fully reset runtime state so start buttons work again
-      state = null; DAYS_LIMIT = 30;
+      state = null; DAYS_LIMIT = 30; dailyCache = {};
       const ov = gi("startOverlay"); if (ov) ov.style.display = "";
       const gc = gi("gameControls"); if (gc) gc.style.display = "none";
       const ul = gi("log"); if (ul) ul.innerHTML = "";
