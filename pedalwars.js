@@ -57,7 +57,6 @@
     const qb = gi("quickBtn"), nb = gi("normalBtn");
     if (qb) qb.addEventListener("click", onStartQuick);
     if (nb) nb.addEventListener("click", onStartNormal);
-
     // Delegation (handles nested spans or theme swaps) but only inside our root
     document.addEventListener("click", (e) => {
       if (!root.contains(e.target)) return;
@@ -66,7 +65,6 @@
       if (el.id === "quickBtn") onStartQuick();
       else if (el.id === "normalBtn") onStartNormal();
     });
-
     function onStartQuick(){ DAYS_LIMIT = 7;  startGame(); }
     function onStartNormal(){ DAYS_LIMIT = 30; startGame(); }
   }
@@ -92,7 +90,12 @@
   }
 
   // ===== Render =====
-  function renderAll(msg) { renderStats(); renderMarket(); renderTravelCosts(); if (msg) log(msg); }
+  function renderAll(msg) {
+    try { renderStats(); } catch(e){ console.warn('[PW] renderStats error', e); }
+    try { renderMarket(); } catch(e){ console.warn('[PW] renderMarket error', e); }
+    try { renderTravelCosts(); } catch(e){ console.warn('[PW] renderTravelCosts error', e); }
+    if (msg) log(msg);
+  }
   function renderStats() {
     const used = Object.values(state.inv).reduce((a, b) => a + b, 0);
     const dayEl = gi("day"); if (dayEl) dayEl.textContent = `${state.day}/${DAYS_LIMIT}`;
@@ -272,8 +275,12 @@
     genPrices();
     renderAll("Day " + prev + " → " + state.day + " complete.");
 
+    // --- Force-refresh stats next tick in case the theme mutates DOM after we render ---
+    setTimeout(renderStats, 0);
+
     if (state.day >= DAYS_LIMIT) { log("Final day reached. Next press ends the game.", "warn"); }
   }
+
   function dailyEvent() {
     const roll = rng();
     if (roll < 0.2) { bumpRep(+0.02); footer("Hype building…"); }
@@ -297,6 +304,7 @@
       const ov = gi("startOverlay"); if (ov) ov.style.display = "none";
       const gc = gi("gameControls"); if (gc) gc.style.display = "flex";
       renderAll("Loaded save.");
+      setTimeout(renderStats, 0);
     } catch (e) { console.warn("Load failed", e); }
   };
   gi("resetBtn").onclick = () => {
@@ -309,6 +317,7 @@
       const ul = gi("log"); if (ul) ul.innerHTML = "";
       renderTravelCosts();
       log("Game reset. Choose a mode to start.");
+      setTimeout(renderStats, 0);
     }
   };
   function loadScores() { try { return JSON.parse(localStorage.getItem(SCORE_KEY) || "[]"); } catch (e) { return []; } }
