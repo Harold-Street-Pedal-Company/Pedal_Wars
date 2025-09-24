@@ -1,6 +1,6 @@
-/* Pedal Wars — JS (delegated End Day click + initial random footer + name-aware flavor) */
+/* Pedal Wars — JS (bulletproof start overlay: direct + delegated + observer + keyboard) */
 (function () {
-  // ===== Scoped helpers (inside #pedalwars only) =====
+  // ===== Scoped helpers =====
   const root = document.getElementById('pedalwars') || document;
   const gi = (id) => (root === document ? document.getElementById(id) : root.querySelector(`#${id}`));
   const fmt = (n) => "$" + Math.floor(Number(n || 0)).toLocaleString();
@@ -9,9 +9,13 @@
   function hashStr(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; }
   const stop = (e)=>{ try{ e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); }catch(_){} };
 
-  // Prevent theme overlays from swallowing clicks
+  // Keep our overlay clickable/above everything
   (function(){ const st=document.createElement('style');
-    st.textContent = "#pedalwars button{pointer-events:auto!important}#pedalwars .overlay[aria-hidden=\"true\"]{display:none!important}";
+    st.textContent = `
+      #pedalwars button{pointer-events:auto!important}
+      #pedalwars .overlay{z-index:2147483647!important}
+      #pedalwars .overlay[aria-hidden="true"]{display:none!important}
+    `;
     (root===document?document.head:root).appendChild(st);
   })();
 
@@ -42,22 +46,22 @@
 
   // ===== State =====
   let DAYS_LIMIT=30, state=null;
-  let dailyCache = {}; // { [day]: { [locId]: { itemId: price } } }
-  let lastCity = 'hamilton'; // tracks the last non-Reverb city for display while on Reverb
+  let dailyCache = {};
+  let lastCity = 'hamilton';
 
   // Build location select ASAP
   (function(){ const sel=gi('locationSelect'); if(!sel||sel.options.length) return;
     LOCATIONS.forEach(l=>{ const o=document.createElement('option'); o.value=l.id; o.textContent=l.name; sel.appendChild(o); });
   })();
 
-  // ===== Deterministic pricing per (day, location) =====
-  function priceRNG(day, locId){ const s = (seed ^ (day*2654435761) ^ hashStr(String(locId)))>>>0; return mulberry32(s); }
+  // ===== Deterministic pricing =====
+  function priceRNG(day, locId){ const s=(seed^(day*2654435761)^hashStr(String(locId)))>>>0; return mulberry32(s); }
   function computePricesFor(day, locId){
     const loc = LOCATIONS.find(l=>l.id===locId)||LOCATIONS[0];
     const pr  = priceRNG(day, locId);
-    const mood    = 0.90 + pr()*0.30;       // city mood
-    const locBase = LOC_FACTOR[locId] || 1; // baseline
-    const shocks  = pr() < 0.55 ? 1 : 2;    // 1–2 items spike/crash
+    const mood    = 0.90 + pr()*0.30;
+    const locBase = LOC_FACTOR[locId] || 1;
+    const shocks  = pr() < 0.55 ? 1 : 2;
     const shockIdxs = new Set(); while(shockIdxs.size<shocks) shockIdxs.add(Math.floor(pr()*ITEMS.length));
     const repBoost = 1 + (state ? state.rep*0.1 : 0);
     const out = {};
@@ -66,50 +70,61 @@
       const bias = (loc.bias?.[it.id] ?? loc.bias?.all ?? 1);
       let roll  = (pr()+pr()+pr())/3;
       let price = (lo + (hi-lo)*roll) * bias * locBase * mood;
-      price *= (0.92 + pr()*0.28); // local noise
+      price *= (0.92 + pr()*0.28);
       if (shockIdxs.has(idx)) price *= (pr()<0.5 ? (2.0+pr()*0.5) : (0.40+pr()*0.20));
       price = Math.round(Math.max(5, price/repBoost));
       out[it.id]=price;
     });
     return out;
   }
-  function getPricesFor(day, locId){
-    dailyCache[day] ||= {};
-    if(!dailyCache[day][locId]) dailyCache[day][locId] = computePricesFor(day, locId);
-    return dailyCache[day][locId];
-  }
+  function getPricesFor(day, locId){ dailyCache[day] ||= {}; return dailyCache[day][locId] || (dailyCache[day][locId]=computePricesFor(day,locId)); }
 
-  // ===== Start buttons (single system) =====
-  function wireStart(){
-    gi('quickBtn')?.addEventListener('click', ()=>{DAYS_LIMIT=7;  startGame();});
-    gi('normalBtn')?.addEventListener('click', ()=>{DAYS_LIMIT=30; startGame();});
+  // ===== Robust start wiring =====
+  let _startWired = false;
+  function wireStartDirect(){
+    if(_startWired) return;
+    const qb=gi('quickBtn'), nb=gi('normalBtn');
+    if(qb){ qb.addEventListener('click', ()=>{DAYS_LIMIT=7;  startGame();}); _startWired=true; }
+    if(nb){ nb.addEventListener('click', ()=>{DAYS_LIMIT=30; startGame();}); _startWired=true; }
   }
-  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', wireStart, {once:true}); } else { wireStart(); }
-
-  // Capture-phase fallback to beat theme wrappers
-  function startDelegated(e){
-    if(!(root.contains?root.contains(e.target):true)) return;
-    const t = e.target.closest && e.target.closest('#quickBtn, #normalBtn'); if(!t) return;
+  function wireStartDelegated(e){
+    const t = e.target && e.target.closest && e.target.closest('#quickBtn,#normalBtn');
+    if(!t) return;
     stop(e);
-    DAYS_LIMIT = (t.id==='quickBtn') ? 7 : 30;
+    DAYS_LIMIT = (t.id==='quickBtn')?7:30;
     startGame();
   }
-  document.addEventListener('click', startDelegated, true);
-  document.addEventListener('pointerdown', startDelegated, true);
-  document.addEventListener('touchstart', startDelegated, {capture:true, passive:false});
+  // DOM ready + microtask fallback
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', wireStartDirect, {once:true}); }
+  else { wireStartDirect(); }
+  setTimeout(wireStartDirect, 0);
+
+  // Delegated capture-phase listeners (beat theme handlers)
+  document.addEventListener('click', wireStartDelegated, true);
+  document.addEventListener('pointerdown', wireStartDelegated, true);
+  document.addEventListener('touchstart', wireStartDelegated, {capture:true, passive:false});
+
+  // MutationObserver: rebind if theme re-renders overlay
+  const mo = new MutationObserver(()=> wireStartDirect());
+  mo.observe(document.documentElement, {subtree:true, childList:true});
+
+  // Keyboard fallback: 1 = quick, 2 = normal
+  document.addEventListener('keydown', (e)=>{
+    if(!gi('startOverlay')) return;
+    if(e.key==='1'){ DAYS_LIMIT=7;  startGame(); }
+    if(e.key==='2'){ DAYS_LIMIT=30; startGame(); }
+  });
 
   // ===== Start / Init =====
   function startGame(){
-    if(state) return; // prevent double-start
+    if(state) return; // already started
     const name=(prompt('Enter player name:','Player')||'Player').trim().slice(0,16);
     state=initState(name);
     gi('startOverlay')?.remove();
     gi('gameControls') && (gi('gameControls').style.display='flex');
-    // Day 1 prices
     state.prices = {...getPricesFor(state.day, state.location)};
     state.lastPrices = {...state.prices};
-    lastCity = state.location; // start city
-    // Seed footer with a name-aware random message right away
+    lastCity = state.location;
     randomFooter();
     renderAll('New game started.');
   }
@@ -119,7 +134,7 @@
              inv:Object.fromEntries(ITEMS.map(i=>[i.id,0])), prices:{}, lastPrices:{}, playerName };
   }
 
-  // ===== Footer helpers (name-aware) =====
+  // ===== Footer messages =====
   function randomFooter(){
     const name = state?.playerName || 'Player';
     const options = [
@@ -205,11 +220,11 @@
 
   gi('dumpBtn').addEventListener('click', ()=>{ const owned=ITEMS.filter(it=>state.inv[it.id]>0); if(!owned.length){ log(`${state.playerName} owns nothing to dump.`,'warn'); return; } const it=pick(owned); state.inv[it.id]-=1; log(`${state.playerName} dumped 1 ${it.name} to free space.`,'warn'); renderStats(); renderMarket(); });
 
-  // ===== Travel & Costs (FREE for any leg to/from Reverb) =====
+  // ===== Travel & Costs (FREE to/from Reverb) =====
   gi('travelBtn').addEventListener('click', ()=> travel(gi('locationSelect').value) );
   function travelCostFor(origin, dest){
     if(origin === dest) return 0;
-    if(origin === 'reverb' || dest === 'reverb') return 0; // free to/from Reverb
+    if(origin === 'reverb' || dest === 'reverb') return 0;
     let h=0; for(let i=0;i<dest.length;i++) h=(h*31+dest.charCodeAt(i))>>>0;
     const r=mulberry32((state.day*2654435761 ^ h)>>>0)();
     return Math.floor(50 + r*100);
@@ -228,20 +243,20 @@
     if(dest !== 'reverb') lastCity = dest;
     state.location=dest;
     refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true, destLocation:dest });
-    randomFooter(); // show a fresh message when you arrive
+    randomFooter();
     log(`${state.playerName} traveled ${from} → ${to} (${cost?('cost '+fmt(cost)):'free'})`, cost?'warn':'good');
     const n=2+Math.floor(mulberry32(Date.now()>>>0)()*2); for(let i=0;i<n;i++) travelEvent();
     renderAll();
   }
   function travelEvent(){ const r=mulberry32(((Date.now()%1e9)+Math.floor(rng()*1e9))>>>0)(); if(r<0.20){ const gain=Math.floor(50+r*250); addCash(gain); log(`${state.playerName} scored a pop-up flip on arrival: +${fmt(gain)}.`,'good'); } else if(r<0.40){ const loss=Math.min(state.cash,Math.floor(30+r*200)); addCash(-loss); log(`${state.playerName} hit road fees: −${fmt(loss)}.`,'bad'); } else if(r<0.60){ bumpRep(+0.02); log(`${state.playerName} met a demo artist — reputation up.`,'good'); } else if(r<0.75){ const interest=Math.floor(state.debt*0.001*(1+Math.floor(r*3))); adjustDebt(+interest); log(`Travel delays increased ${state.playerName}'s costs: +${fmt(interest)} debt.`,'warn'); } else if(r<0.90){ const refund=Math.floor(20+r*120); addCash(refund); log(`${state.playerName} returned a defective part and got ${fmt(refund)} back.`,'good'); } else { bumpRep(-0.015); log(`Buyer flaked on ${state.playerName} — tiny rep hit.`,'warn'); } }
 
-  // ===== End Day (single tick per click; strong debounce + delegated fallback) =====
+  // ===== End Day (single tick; debounce + delegated fallback) =====
   let _endDayLock=false, _endDayLastTs=0;
   function endDay(){
     if(!state) return;
-    const now = Date.now();
-    if(_endDayLock || (now - _endDayLastTs) < 250) return; // ignore dup within 250ms
-    _endDayLock = true; _endDayLastTs = now;
+    const now=Date.now();
+    if(_endDayLock || (now-_endDayLastTs)<250) return;
+    _endDayLock=true; _endDayLastTs=now;
 
     if(state.day>=DAYS_LIMIT){ _endDayLock=false; gameOver(); return; }
     const prev=state.day; state.day = prev + 1;
@@ -254,32 +269,14 @@
     renderAll(`Day ${prev} → ${state.day} complete.`);
     if(state.day>=DAYS_LIMIT){ log('Final day reached. Next press ends the game.','warn'); }
 
-    setTimeout(()=>{ _endDayLock = false; }, 250);
+    setTimeout(()=>{ _endDayLock=false; }, 250);
   }
-  // direct listener
   gi('nextBtn').addEventListener('click', endDay);
-  // delegated fallback (beats any theme interference)
-  root.addEventListener('click', (e)=>{
-    const btn = e.target.closest && e.target.closest('#nextBtn');
-    if(!btn) return;
-    e.preventDefault();
-    endDay();
-  });
+  root.addEventListener('click', (e)=>{ const b=e.target.closest && e.target.closest('#nextBtn'); if(!b) return; e.preventDefault(); endDay(); });
 
-  // ===== Daily events & footer (name-aware) =====
+  // ===== Daily footer =====
   function dailyEvent(){
-    const name = state.playerName || 'Player';
-    const footers = [
-      `${name} hears rumor of a limited drop.`,
-      `A local blog mentions ${name}'s shop—small spike in interest.`,
-      `${name} posts a board shot; comments say “take my money.”`,
-      `Quiet scuttlebutt about clones; ${name} watches the listings.`,
-      `${name} spots a touring act in town—buyers might pay a premium.`,
-      `${name} gets tagged on IG; inbox warms up.`,
-      `Hype building around a boutique run ${name} has eyes on.`,
-      `${name} sees a few lowballers circling. Market feels soft.`,
-    ];
-    gi('eventFooter').textContent = pick(footers);
+    randomFooter();
   }
   function footer(text){ gi('eventFooter').textContent = text; }
 
@@ -287,10 +284,9 @@
   const SAVE_KEY='pedalwars_save_v1';
   gi('saveBtn').addEventListener('click', ()=>{ try{ localStorage.setItem(SAVE_KEY, JSON.stringify({state,DAYS_LIMIT,lastCity})); log('Game saved.'); }catch(e){ console.warn('Save failed',e); }});
   gi('loadBtn').addEventListener('click', ()=>{ try{ const s=localStorage.getItem(SAVE_KEY); if(!s){ log('No save found.','warn'); return; } const obj=JSON.parse(s); DAYS_LIMIT=obj.DAYS_LIMIT||30; state=obj.state; lastCity=obj.lastCity||lastCity; gi('gameControls').style.display='flex'; refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true }); randomFooter(); renderAll('Loaded save.'); }catch(e){ console.warn('Load failed',e); }});
-  gi('resetBtn').addEventListener('click', ()=>{ if(!confirm('Reset game?')) return; try{ localStorage.removeItem(SAVE_KEY); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; lastCity='hamilton'; gi('gameControls').style.display='none'; gi('log').innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button><button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; (root===document?document.body:root).prepend(ov); wireStart(); renderTravelCosts(); randomFooter(); log('Game reset. Choose a mode to start.'); });
+  gi('resetBtn').addEventListener('click', ()=>{ if(!confirm('Reset game?')) return; try{ localStorage.removeItem(SAVE_KEY); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; lastCity='hamilton'; gi('gameControls').style.display='none'; gi('log').innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button><button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; (root===document?document.body:root).prepend(ov); _startWired=false; wireStartDirect(); renderTravelCosts(); randomFooter(); log('Game reset. Choose a mode to start.'); });
 
   // Pre-start visuals
   renderTravelCosts();
-
-  try{ console.assert(typeof log==='function','log() defined'); console.log('[Pedal Wars] bundle executed'); }catch(e){}
+  console.log('[Pedal Wars] bundle loaded');
 })();
