@@ -1,4 +1,4 @@
-/* Pedal Wars — JS (fix: single-day tick, reverb note shows origin city, name-aware flavor) */
+/* Pedal Wars — JS (delegated End Day click + initial random footer + name-aware flavor) */
 (function () {
   // ===== Scoped helpers (inside #pedalwars only) =====
   const root = document.getElementById('pedalwars') || document;
@@ -109,6 +109,8 @@
     state.prices = {...getPricesFor(state.day, state.location)};
     state.lastPrices = {...state.prices};
     lastCity = state.location; // start city
+    // Seed footer with a name-aware random message right away
+    randomFooter();
     renderAll('New game started.');
   }
   function initState(playerName){
@@ -117,12 +119,27 @@
              inv:Object.fromEntries(ITEMS.map(i=>[i.id,0])), prices:{}, lastPrices:{}, playerName };
   }
 
+  // ===== Footer helpers (name-aware) =====
+  function randomFooter(){
+    const name = state?.playerName || 'Player';
+    const options = [
+      `${name} hears rumor of a limited drop.`,
+      `A local blog mentions ${name}'s shop—small spike in interest.`,
+      `${name} posts a board shot; comments say “take my money.”`,
+      `Quiet scuttlebutt about clones; ${name} watches the listings.`,
+      `${name} spots a touring act in town—buyers might pay a premium.`,
+      `${name} gets tagged on IG; inbox warms up.`,
+      `Hype building around a boutique run ${name} has eyes on.`,
+      `${name} sees a few lowballers circling. Market feels soft.`,
+    ];
+    gi('eventFooter').textContent = pick(options);
+  }
+
   // ===== Render =====
   function renderAll(msg){ renderStats(); renderMarket(); renderTravelCosts(); if(msg) log(msg); }
   function renderStats(){
     const used=Object.values(state.inv).reduce((a,b)=>a+b,0);
     const loc=LOCATIONS.find(l=>l.id===state.location);
-    // Show origin city while on Reverb
     const locBlurb = (state.location==='reverb')
       ? `${loc.name} — listing from ${LOCATIONS.find(l=>l.id===lastCity)?.name || 'Unknown'}`
       : `${loc.name} — ${loc.flavor}`;
@@ -182,9 +199,10 @@
   gi('repayBtn').addEventListener('click', ()=>{ if(state?.debt<=0){ log(`${state.playerName} has no debt to repay.`,'warn'); return; } if(state.cash<=0){ log(`${state.playerName} has no cash to repay.`,'bad'); return; } const pay=Math.min(500,state.debt,state.cash); adjustDebt(-pay); addCash(-pay); log(`${state.playerName} repaid `+fmt(pay)+'.','good'); renderStats(); });
 
   function buy(id,qty){ const cost=state.prices[id]*qty; if(capacityUsed()+qty>state.cap){ log('Not enough space.','bad'); return; } if(cost>state.cash){ log('Not enough cash.','bad'); return; } addCash(-cost); state.inv[id]+=qty; bumpRep(+0.002*qty); log(`${state.playerName} bought ${qty} × ${ITEMS.find(x=>x.id===id).name} for ${fmt(cost)}.`,'good'); renderStats(); renderMarket(); }
-  function sell(id,qty){ const have=state.inv[id]||0; if(qty>have){ log(`${state.playerName} tried to sell more than they own.`,'bad'); return; } const gross=state.prices[id]*qty; const fee=(state.location==='reverb')?50:0; const net=Math.max(0,gross-fee); state.inv[id]-=qty; addCash(net); bumpRep(+0.001*qty); log(fee?`${state.playerName} sold ${qty} × ${ITEMS.find(x=>x.id===id).name} for ${fmt(gross)} (−${fmt(fee)} fee) → ${fmt(net)}.`:`${state.playerName} sold ${qty} × ${ITEMS.find(x=>x.id===id).name} for ${fmt(net)}.`); renderStats(); renderMarket(); }
+  function sell(id,qty){ const have=state.inv[id]||0; if(qty>have){ log(`${state.playerName} tried to sell more than they own.`,'bad'); return; } const gross=state.prices[id]*qty; const fee=(state.location==='reverb')?50:0; const net=Math.max(0,gross-fee); state.inv[id]-=qty; addCash(net); bumpRep(+0.001*qty); log(fee?`${state.playerName} sold ${qty} × ${ITEMS.find(x=>x.id===id).name} for ${fmt(gross)} (−${fmt(fee)} fee) → ${fmt(net)}.`:`${state.playerName} sold ${qty} × ${ITEMS.find(x=>x.id===id).name} for ${fmt(net)}.`); renderStats(); renderMarket(); });
 
   gi('sellAllBtn').addEventListener('click', ()=>{ let total=0,sold=false; Object.keys(state.inv).forEach(k=>{ const q=state.inv[k]; if(q>0){ total+=q*state.prices[k]; state.inv[k]=0; sold=true; }}); if(!sold){ log(`${state.playerName} has nothing to sell.`,'warn'); return; } const fee=(state.location==='reverb')?50:0; const net=Math.max(0,total-fee); addCash(net); log(`${state.playerName} quick sold everything for ${fmt(total)}${fee?` (−${fmt(fee)} fee)`:''} → ${fmt(net)} net.`,'good'); renderAll(); });
+
   gi('dumpBtn').addEventListener('click', ()=>{ const owned=ITEMS.filter(it=>state.inv[it.id]>0); if(!owned.length){ log(`${state.playerName} owns nothing to dump.`,'warn'); return; } const it=pick(owned); state.inv[it.id]-=1; log(`${state.playerName} dumped 1 ${it.name} to free space.`,'warn'); renderStats(); renderMarket(); });
 
   // ===== Travel & Costs (FREE for any leg to/from Reverb) =====
@@ -207,20 +225,18 @@
     if(state.cash<cost){ log(`Travel costs ${fmt(cost)}. ${state.playerName} needs more cash.`,'bad'); return; }
     addCash(-cost);
     const from=LOCATIONS.find(l=>l.id===state.location).name; const to=LOCATIONS.find(l=>l.id===dest).name;
-    // update lastCity if leaving/arriving a non-Reverb city
     if(dest !== 'reverb') lastCity = dest;
     state.location=dest;
-    // Prices stay stable for current day; show deltas vs that city's previous day
     refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true, destLocation:dest });
+    randomFooter(); // show a fresh message when you arrive
     log(`${state.playerName} traveled ${from} → ${to} (${cost?('cost '+fmt(cost)):'free'})`, cost?'warn':'good');
     const n=2+Math.floor(mulberry32(Date.now()>>>0)()*2); for(let i=0;i<n;i++) travelEvent();
     renderAll();
   }
   function travelEvent(){ const r=mulberry32(((Date.now()%1e9)+Math.floor(rng()*1e9))>>>0)(); if(r<0.20){ const gain=Math.floor(50+r*250); addCash(gain); log(`${state.playerName} scored a pop-up flip on arrival: +${fmt(gain)}.`,'good'); } else if(r<0.40){ const loss=Math.min(state.cash,Math.floor(30+r*200)); addCash(-loss); log(`${state.playerName} hit road fees: −${fmt(loss)}.`,'bad'); } else if(r<0.60){ bumpRep(+0.02); log(`${state.playerName} met a demo artist — reputation up.`,'good'); } else if(r<0.75){ const interest=Math.floor(state.debt*0.001*(1+Math.floor(r*3))); adjustDebt(+interest); log(`Travel delays increased ${state.playerName}'s costs: +${fmt(interest)} debt.`,'warn'); } else if(r<0.90){ const refund=Math.floor(20+r*120); addCash(refund); log(`${state.playerName} returned a defective part and got ${fmt(refund)} back.`,'good'); } else { bumpRep(-0.015); log(`Buyer flaked on ${state.playerName} — tiny rep hit.`,'warn'); } }
 
-  // ===== End Day (single tick per click; strong debounce) =====
+  // ===== End Day (single tick per click; strong debounce + delegated fallback) =====
   let _endDayLock=false, _endDayLastTs=0;
-  gi('nextBtn').addEventListener('click', endDay);
   function endDay(){
     if(!state) return;
     const now = Date.now();
@@ -228,12 +244,11 @@
     _endDayLock = true; _endDayLastTs = now;
 
     if(state.day>=DAYS_LIMIT){ _endDayLock=false; gameOver(); return; }
-    const prev=state.day; state.day = prev + 1; // increment ONCE
+    const prev=state.day; state.day = prev + 1;
 
     if(state.debt>0){ const daily=state.rate/365; const inc=Math.floor(state.debt*daily); adjustDebt(+inc); if(inc>0) log(`Interest accrued ${fmt(inc)}.`,'warn'); }
     const fee=Math.floor(capacityUsed()*2); if(fee>0){ addCash(-fee); log(`Storage fees ${fmt(fee)}.`,'warn'); }
 
-    // Day changed → refresh prices for current city (delta vs yesterday)
     refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true });
     dailyEvent();
     renderAll(`Day ${prev} → ${state.day} complete.`);
@@ -241,8 +256,17 @@
 
     setTimeout(()=>{ _endDayLock = false; }, 250);
   }
+  // direct listener
+  gi('nextBtn').addEventListener('click', endDay);
+  // delegated fallback (beats any theme interference)
+  root.addEventListener('click', (e)=>{
+    const btn = e.target.closest && e.target.closest('#nextBtn');
+    if(!btn) return;
+    e.preventDefault();
+    endDay();
+  });
 
-  // ===== Daily events & footer (name-aware flavor) =====
+  // ===== Daily events & footer (name-aware) =====
   function dailyEvent(){
     const name = state.playerName || 'Player';
     const footers = [
@@ -255,22 +279,15 @@
       `Hype building around a boutique run ${name} has eyes on.`,
       `${name} sees a few lowballers circling. Market feels soft.`,
     ];
-    const roll = rng();
-    const msg = pick(footers);
-    if (roll < 0.2) { bumpRep(+0.02); footer(msg); }
-    else if (roll < 0.35) { bumpRep(-0.01); footer(msg); }
-    else if (roll < 0.45) { const loss = Math.min(state.cash, Math.floor(50 + rng() * 200)); addCash(-loss); bumpRep(-0.015); footer(msg); }
-    else if (roll < 0.55) { const owned = ITEMS.filter((i) => state.inv[i.id] > 0); if (owned.length) { const it = pick(owned); const take = Math.max(1, Math.floor(state.inv[it.id] * (0.25 + rng() * 0.5))); state.inv[it.id] = Math.max(0, state.inv[it.id] - take); footer(msg); } else { footer(msg); } }
-    else if (roll < 0.7) { footer(msg); }
-    else { footer(msg); }
+    gi('eventFooter').textContent = pick(footers);
   }
   function footer(text){ gi('eventFooter').textContent = text; }
 
   // ===== Save/Load/Reset =====
   const SAVE_KEY='pedalwars_save_v1';
   gi('saveBtn').addEventListener('click', ()=>{ try{ localStorage.setItem(SAVE_KEY, JSON.stringify({state,DAYS_LIMIT,lastCity})); log('Game saved.'); }catch(e){ console.warn('Save failed',e); }});
-  gi('loadBtn').addEventListener('click', ()=>{ try{ const s=localStorage.getItem(SAVE_KEY); if(!s){ log('No save found.','warn'); return; } const obj=JSON.parse(s); DAYS_LIMIT=obj.DAYS_LIMIT||30; state=obj.state; lastCity=obj.lastCity||lastCity; gi('gameControls').style.display='flex'; refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true }); renderAll('Loaded save.'); }catch(e){ console.warn('Load failed',e); }});
-  gi('resetBtn').addEventListener('click', ()=>{ if(!confirm('Reset game?')) return; try{ localStorage.removeItem(SAVE_KEY); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; lastCity='hamilton'; gi('gameControls').style.display='none'; gi('log').innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button><button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; (root===document?document.body:root).prepend(ov); wireStart(); renderTravelCosts(); log('Game reset. Choose a mode to start.'); });
+  gi('loadBtn').addEventListener('click', ()=>{ try{ const s=localStorage.getItem(SAVE_KEY); if(!s){ log('No save found.','warn'); return; } const obj=JSON.parse(s); DAYS_LIMIT=obj.DAYS_LIMIT||30; state=obj.state; lastCity=obj.lastCity||lastCity; gi('gameControls').style.display='flex'; refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true }); randomFooter(); renderAll('Loaded save.'); }catch(e){ console.warn('Load failed',e); }});
+  gi('resetBtn').addEventListener('click', ()=>{ if(!confirm('Reset game?')) return; try{ localStorage.removeItem(SAVE_KEY); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; lastCity='hamilton'; gi('gameControls').style.display='none'; gi('log').innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button><button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; (root===document?document.body:root).prepend(ov); wireStart(); renderTravelCosts(); randomFooter(); log('Game reset. Choose a mode to start.'); });
 
   // Pre-start visuals
   renderTravelCosts();
