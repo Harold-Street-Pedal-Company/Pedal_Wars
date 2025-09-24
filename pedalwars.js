@@ -1,7 +1,9 @@
 /* Pedal Wars – external JS bundle for Big Cartel (CSP-safe) */
 (function () {
   // ===== Utilities =====
-  const gi = (id) => document.getElementById(id);
+  // Scope all DOM queries to the #pedalwars container to avoid theme ID collisions
+  const root = document.getElementById('pedalwars') || document;
+  const gi = (id) => root.querySelector(`#${id}`);
   const fmt = (n) => "$" + Math.floor(Number(n || 0)).toLocaleString();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   function mulberry32(a) {
@@ -55,13 +57,16 @@
     const qb = gi("quickBtn"), nb = gi("normalBtn");
     if (qb) qb.addEventListener("click", onStartQuick);
     if (nb) nb.addEventListener("click", onStartNormal);
-    // Delegation (handles nested spans or theme swaps)
+
+    // Delegation (handles nested spans or theme swaps) but only inside our root
     document.addEventListener("click", (e) => {
+      if (!root.contains(e.target)) return;
       const el = e && e.target && e.target.closest ? e.target.closest("#quickBtn, #normalBtn") : null;
       if (!el) return;
       if (el.id === "quickBtn") onStartQuick();
       else if (el.id === "normalBtn") onStartNormal();
     });
+
     function onStartQuick(){ DAYS_LIMIT = 7;  startGame(); }
     function onStartNormal(){ DAYS_LIMIT = 30; startGame(); }
   }
@@ -90,25 +95,23 @@
   function renderAll(msg) { renderStats(); renderMarket(); renderTravelCosts(); if (msg) log(msg); }
   function renderStats() {
     const used = Object.values(state.inv).reduce((a, b) => a + b, 0);
-    gi("day").textContent = `${state.day}/${DAYS_LIMIT}`;
-    gi("cash").textContent = fmt(state.cash);
-    gi("debt").textContent = fmt(state.debt);
-    gi("rate").textContent = (state.rate * 100).toFixed(1) + "% APR";
-    gi("rep").textContent = Math.round(state.rep * 100) + "%";
-    gi("used").textContent = used; gi("cap").textContent = state.cap;
-    gi("daysLeft").textContent = `${DAYS_LIMIT - state.day + 1} days left`;
+    const dayEl = gi("day"); if (dayEl) dayEl.textContent = `${state.day}/${DAYS_LIMIT}`;
+    const cashEl = gi("cash"); if (cashEl) cashEl.textContent = fmt(state.cash);
+    const debtEl = gi("debt"); if (debtEl) debtEl.textContent = fmt(state.debt);
+    const rateEl = gi("rate"); if (rateEl) rateEl.textContent = (state.rate * 100).toFixed(1) + "% APR";
+    const repEl = gi("rep"); if (repEl) repEl.textContent = Math.round(state.rep * 100) + "%";
+    const usedEl = gi("used"); if (usedEl) usedEl.textContent = used;
+    const capEl = gi("cap"); if (capEl) capEl.textContent = state.cap;
+    const leftEl = gi("daysLeft"); if (leftEl) leftEl.textContent = `${DAYS_LIMIT - state.day + 1} days left`;
     const loc = LOCATIONS.find((l) => l.id === state.location);
-    gi("locInfo").textContent = `${loc.name} — ${loc.flavor}`;
-    gi("repMeter").style.width = Math.round(state.rep * 100) + "%";
+    const locInfo = gi("locInfo"); if (locInfo) locInfo.textContent = `${loc.name} — ${loc.flavor}`;
+    const repMeter = gi("repMeter"); if (repMeter) repMeter.style.width = Math.round(state.rep * 100) + "%";
   }
   function renderMarket() {
-    const tb = gi("marketBody"); tb.innerHTML = "";
+    const tb = gi("marketBody"); if (!tb) return; tb.innerHTML = "";
     ITEMS.forEach((it) => {
-      const owned = state.inv[it.id] || 0;
-      const p = state.prices[it.id];
-      const last = state.lastPrices[it.id] || p;
-      const delta = p - last;
-      const cls = delta > 0 ? "price up" : delta < 0 ? "price down" : "";
+      const owned = state.inv[it.id] || 0; const p = state.prices[it.id]; const last = state.lastPrices[it.id] || p;
+      const delta = p - last; const cls = delta > 0 ? "price up" : delta < 0 ? "price down" : "";
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td align="left"><strong>${it.name}</strong><br/><small>Weight ${it.weight}</small></td>
@@ -133,8 +136,7 @@
       btn.onclick = () => {
         const id = btn.getAttribute("data-id"); const act = btn.getAttribute("data-act");
         const qty = parseInt((gi((act === "buy" ? "b_" : "s_") + id).value) || 0, 10);
-        if (qty <= 0) return;
-        if (act === "buy") buy(id, qty); else sell(id, qty);
+        if (qty <= 0) return; if (act === "buy") buy(id, qty); else sell(id, qty);
       };
     });
   }
@@ -227,7 +229,7 @@
   }
   function renderTravelCosts() {
     const s = LOCATIONS.map((l) => l.name + ": " + fmt(travelCostFor(l.id))).join(" | ");
-    gi("travelCosts").textContent = "Travel Costs: " + s;
+    const el = gi("travelCosts"); if (el) el.textContent = "Travel Costs: " + s;
   }
   function travel(dest) {
     if (dest === state.location) { log("You are already there.", "warn"); return; }
@@ -258,13 +260,18 @@
     if (!state) return;
     if (state.day >= DAYS_LIMIT) { gameOver(); return; }
     const prev = state.day; state.day = prev + 1; // increment first for visible tick
+
     if (state.debt > 0) {
       const daily = state.rate / 365; const inc = Math.floor(state.debt * daily);
       adjustDebt(+inc); if (inc > 0) log("Interest accrued " + fmt(inc) + ".", "warn");
     }
     const fee = Math.floor(capacityUsed() * 2);
     if (fee > 0) { addCash(-fee); log("Storage fees " + fmt(fee) + ".", "warn"); }
-    dailyEvent(); genPrices(); renderAll("Day " + prev + " → " + state.day + " complete.");
+
+    dailyEvent();
+    genPrices();
+    renderAll("Day " + prev + " → " + state.day + " complete.");
+
     if (state.day >= DAYS_LIMIT) { log("Final day reached. Next press ends the game.", "warn"); }
   }
   function dailyEvent() {
@@ -276,7 +283,7 @@
     else if (roll < 0.7) { footer("Buzz is in the air."); }
     else { footer("Quiet day."); }
   }
-  function footer(text) { gi("eventFooter").textContent = text; }
+  function footer(text) { const el = gi("eventFooter"); if (el) el.textContent = text; }
 
   // ===== Save/Load/Reset & Scores =====
   const SAVE_KEY = "pedalwars_save_v1", SCORE_KEY = "pedalwars_scores_v1";
@@ -287,7 +294,8 @@
       if (!s) { log("No save found.", "warn"); return; }
       const obj = JSON.parse(s);
       DAYS_LIMIT = obj.DAYS_LIMIT || 30; state = obj.state;
-      gi("startOverlay").style.display = "none"; gi("gameControls").style.display = "flex";
+      const ov = gi("startOverlay"); if (ov) ov.style.display = "none";
+      const gc = gi("gameControls"); if (gc) gc.style.display = "flex";
       renderAll("Loaded save.");
     } catch (e) { console.warn("Load failed", e); }
   };
