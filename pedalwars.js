@@ -55,13 +55,15 @@
   let DAYS_LIMIT = 30;
   let state = null;
 
+  // Include an interest bucket so repayments can pay interest first
   function initState(playerName){
     return {
       playerName, day:1, location:'hamilton',
       cash:1500, debt:1000, rate:0.18, rep:0.10, cap:24,
       inv:Object.fromEntries(ITEMS.map(i=>[i.id,0])),
       markets:{}, featured:{}, lastCity:'hamilton',
-      ticking:false
+      ticking:false,
+      intBucket:0 // <-- accumulated interest added to debt since last principal payment
     };
   }
 
@@ -187,7 +189,7 @@
   }
   function renderTravelCosts(){
     const cur = state ? state.location : 'hamilton';
-    const s = LOCATIONS.map(l => `${l.name}: ${fmt(travelCostFor(cur, l.id))}`).join(' | ');
+    const s = LOCATIONS.map(l => `${l.name}: ${fmt(travelCostFor(cur, l.id))}`).join(" | ");
     gi('travelCosts').textContent = 'Travel Costs: ' + s;
   }
   function renderAll(msg){ renderStats(); renderMarket(); renderTravelCosts(); if(msg) log(msg); }
@@ -234,7 +236,7 @@
     const from=LOCATIONS.find(l=>l.id===state.location).name; const to=LOCATIONS.find(l=>l.id===dest).name;
     if(dest!=='reverb') state.lastCity = dest;
     state.location = dest;
-    ensureMarketsForDay(state.day);
+    ensureMarketsForDay(state.day); // show dest snapshot for current day
     log(`${state.playerName} traveled ${from} → ${to} (${cost?('cost '+fmt(cost)):'free'})`, cost?'warn':'good');
     renderAll();
   });
@@ -248,10 +250,17 @@
       if (state.day >= DAYS_LIMIT) { gameOver(); return; }
       const prev = state.day; state.day = prev + 1;
 
+      // Accrue interest daily into debt AND intBucket
       if(state.debt>0){
-        const daily=state.rate/365; const inc=Math.floor(state.debt*daily);
-        adjustDebt(+inc); if(inc>0) log(`Interest accrued ${fmt(inc)}.`,'warn');
+        const daily=state.rate/365;
+        const inc=Math.floor(state.debt*daily); // keep math honest; can be small on low debt
+        if (inc>0){
+          adjustDebt(+inc);
+          state.intBucket += inc; // track portion of debt that is interest
+          log(`Interest accrued ${fmt(inc)}.`, 'warn');
+        }
       }
+
       const storage = Math.floor(capacityUsed()*2);
       if(storage>0){ addCash(-storage); log(`Storage fees ${fmt(storage)}.`,'warn'); }
 
@@ -292,8 +301,17 @@ Rank: ${grade}`);
       if (state.debt<=0) { log('No debt to repay.','warn'); return; }
       if (state.cash<=0) { log('No cash to repay.','bad'); return; }
       const pay = Math.min(500, state.debt, state.cash);
-      adjustDebt(-pay); addCash(-pay);
-      log('Repaid '+fmt(pay)+'.','good'); renderStats();
+
+      // NEW: pay interest first, then principal
+      const interestPortion = Math.min(pay, state.intBucket);
+      const principalPortion = pay - interestPortion;
+
+      state.intBucket = Math.max(0, state.intBucket - interestPortion);
+      adjustDebt(-pay);           // reduce total debt by full payment
+      addCash(-pay);
+
+      log(`Repaid ${fmt(pay)} — ${fmt(interestPortion)} interest + ${fmt(principalPortion)} principal.`, 'good');
+      renderStats();
     } else if(id==='sellAllBtn'){
       let total=0, sold=false;
       const prices = state.markets[state.day][state.location].prices;
@@ -317,12 +335,26 @@ Rank: ${grade}`);
   }, true);
 
   // ---------- Save/Load/Reset ----------
-  const SAVE_KEY='pedalwars_save_v2';
-  gi('saveBtn').addEventListener('click', ()=>{ try{ localStorage.setItem(SAVE_KEY, JSON.stringify({state, DAYS_LIMIT})); log('Game saved.'); }catch(e){ console.warn('Save failed',e); }});
-  gi('loadBtn').addEventListener('click', ()=>{ try{ const s=localStorage.getItem(SAVE_KEY); if(!s){ log('No save found.','warn'); return; } const obj=JSON.parse(s); state=obj.state; DAYS_LIMIT=obj.DAYS_LIMIT||30; gi('gameControls').style.display='flex'; ensureMarketsForDay(state.day); renderAll('Loaded save.'); }catch(e){ console.warn('Load failed',e); }});
+  const SAVE_KEY='pedalwars_save_v3'; // bump to avoid mixing with old saves lacking intBucket
+  gi('saveBtn').addEventListener('click', ()=>{ try{
+    localStorage.setItem(SAVE_KEY, JSON.stringify({state, DAYS_LIMIT}));
+    log('Game saved.');
+  }catch(e){ console.warn('Save failed',e); }});
+
+  gi('loadBtn').addEventListener('click', ()=>{ try{
+    const s=localStorage.getItem(SAVE_KEY); if(!s){ log('No save found.','warn'); return; }
+    const obj=JSON.parse(s); state=obj.state; DAYS_LIMIT=obj.DAYS_LIMIT||30;
+    // migrate older saves gracefully
+    if (typeof state.intBucket !== 'number') state.intBucket = 0;
+    gi('gameControls').style.display='flex';
+    ensureMarketsForDay(state.day); renderAll('Loaded save.');
+  }catch(e){ console.warn('Load failed',e); }});
+
   gi('resetBtn').addEventListener('click', ()=>{
     if(!confirm('Reset game?')) return;
     try{ localStorage.removeItem(SAVE_KEY); }catch(e){}
+    // Clear feed immediately and unconditionally
+    const ul=gi('log'); if(ul) ul.innerHTML='';
     state=null; DAYS_LIMIT=30;
     const ov=document.createElement('div');
     ov.id='startOverlay'; ov.className='overlay';
@@ -332,7 +364,7 @@ Rank: ${grade}`);
       <button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button>
     </div>`;
     document.body.prepend(ov);
-    wireStart(); renderTravelCosts(); gi('log').innerHTML=''; log('Game reset. Choose a mode to start.');
+    wireStart(); renderTravelCosts(); log('Game reset. Choose a mode to start.');
   });
 
   // ---------- Start wiring ----------
