@@ -1,4 +1,4 @@
-/* Pedal Wars — JS (bulletproof start overlay: direct + delegated + observer + keyboard) */
+/* Pedal Wars — Roadie-hardened start: move overlay to <body>, direct+delegated+observer, keyboard, fail-safe autostart */
 (function () {
   // ===== Scoped helpers =====
   const root = document.getElementById('pedalwars') || document;
@@ -13,7 +13,7 @@
   (function(){ const st=document.createElement('style');
     st.textContent = `
       #pedalwars button{pointer-events:auto!important}
-      #pedalwars .overlay{z-index:2147483647!important}
+      #pedalwars .overlay{position:fixed!important; inset:0!important; z-index:2147483647!important; pointer-events:auto!important}
       #pedalwars .overlay[aria-hidden="true"]{display:none!important}
     `;
     (root===document?document.head:root).appendChild(st);
@@ -79,15 +79,18 @@
   }
   function getPricesFor(day, locId){ dailyCache[day] ||= {}; return dailyCache[day][locId] || (dailyCache[day][locId]=computePricesFor(day,locId)); }
 
-  // ===== Robust start wiring =====
+  // ===== Start wiring (Roadie proof) =====
   let _startWired = false;
   function wireStartDirect(){
-    if(_startWired) return;
     const qb=gi('quickBtn'), nb=gi('normalBtn');
-    if(qb){ qb.addEventListener('click', ()=>{DAYS_LIMIT=7;  startGame();}); _startWired=true; }
-    if(nb){ nb.addEventListener('click', ()=>{DAYS_LIMIT=30; startGame();}); _startWired=true; }
+    if(qb && !qb._pw){ qb.addEventListener('click', ()=>{DAYS_LIMIT=7;  startGame();}); qb._pw=1; _startWired=true; }
+    if(nb && !nb._pw){ nb.addEventListener('click', ()=>{DAYS_LIMIT=30; startGame();}); nb._pw=1; _startWired=true; }
+    // Move overlay to <body> so it always sits on top of theme wrappers
+    const ov=gi('startOverlay');
+    if(ov && ov.parentNode !== document.body){ document.body.appendChild(ov); }
+    if(ov){ ov.style.zIndex = '2147483647'; ov.style.position='fixed'; }
   }
-  function wireStartDelegated(e){
+  function startDelegated(e){
     const t = e.target && e.target.closest && e.target.closest('#quickBtn,#normalBtn');
     if(!t) return;
     stop(e);
@@ -100,12 +103,12 @@
   setTimeout(wireStartDirect, 0);
 
   // Delegated capture-phase listeners (beat theme handlers)
-  document.addEventListener('click', wireStartDelegated, true);
-  document.addEventListener('pointerdown', wireStartDelegated, true);
-  document.addEventListener('touchstart', wireStartDelegated, {capture:true, passive:false});
+  document.addEventListener('click', startDelegated, true);
+  document.addEventListener('pointerdown', startDelegated, true);
+  document.addEventListener('touchstart', startDelegated, {capture:true, passive:false});
 
   // MutationObserver: rebind if theme re-renders overlay
-  const mo = new MutationObserver(()=> wireStartDirect());
+  const mo = new MutationObserver(wireStartDirect);
   mo.observe(document.documentElement, {subtree:true, childList:true});
 
   // Keyboard fallback: 1 = quick, 2 = normal
@@ -114,6 +117,14 @@
     if(e.key==='1'){ DAYS_LIMIT=7;  startGame(); }
     if(e.key==='2'){ DAYS_LIMIT=30; startGame(); }
   });
+
+  // Fail-safe autostart if Roadie keeps eating clicks
+  setTimeout(()=>{
+    if(!state && gi('startOverlay')){
+      console.warn('[Pedal Wars] Autostart fallback fired (theme swallowed clicks).');
+      DAYS_LIMIT=7; startGame();
+    }
+  }, 1500);
 
   // ===== Start / Init =====
   function startGame(){
@@ -250,7 +261,7 @@
   }
   function travelEvent(){ const r=mulberry32(((Date.now()%1e9)+Math.floor(rng()*1e9))>>>0)(); if(r<0.20){ const gain=Math.floor(50+r*250); addCash(gain); log(`${state.playerName} scored a pop-up flip on arrival: +${fmt(gain)}.`,'good'); } else if(r<0.40){ const loss=Math.min(state.cash,Math.floor(30+r*200)); addCash(-loss); log(`${state.playerName} hit road fees: −${fmt(loss)}.`,'bad'); } else if(r<0.60){ bumpRep(+0.02); log(`${state.playerName} met a demo artist — reputation up.`,'good'); } else if(r<0.75){ const interest=Math.floor(state.debt*0.001*(1+Math.floor(r*3))); adjustDebt(+interest); log(`Travel delays increased ${state.playerName}'s costs: +${fmt(interest)} debt.`,'warn'); } else if(r<0.90){ const refund=Math.floor(20+r*120); addCash(refund); log(`${state.playerName} returned a defective part and got ${fmt(refund)} back.`,'good'); } else { bumpRep(-0.015); log(`Buyer flaked on ${state.playerName} — tiny rep hit.`,'warn'); } }
 
-  // ===== End Day (single tick; debounce + delegated fallback) =====
+  // ===== End Day (single tick; debounce) =====
   let _endDayLock=false, _endDayLastTs=0;
   function endDay(){
     if(!state) return;
@@ -265,28 +276,21 @@
     const fee=Math.floor(capacityUsed()*2); if(fee>0){ addCash(-fee); log(`Storage fees ${fmt(fee)}.`,'warn'); }
 
     refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true });
-    dailyEvent();
+    randomFooter();
     renderAll(`Day ${prev} → ${state.day} complete.`);
     if(state.day>=DAYS_LIMIT){ log('Final day reached. Next press ends the game.','warn'); }
 
     setTimeout(()=>{ _endDayLock=false; }, 250);
   }
   gi('nextBtn').addEventListener('click', endDay);
-  root.addEventListener('click', (e)=>{ const b=e.target.closest && e.target.closest('#nextBtn'); if(!b) return; e.preventDefault(); endDay(); });
-
-  // ===== Daily footer =====
-  function dailyEvent(){
-    randomFooter();
-  }
-  function footer(text){ gi('eventFooter').textContent = text; }
 
   // ===== Save/Load/Reset =====
   const SAVE_KEY='pedalwars_save_v1';
   gi('saveBtn').addEventListener('click', ()=>{ try{ localStorage.setItem(SAVE_KEY, JSON.stringify({state,DAYS_LIMIT,lastCity})); log('Game saved.'); }catch(e){ console.warn('Save failed',e); }});
   gi('loadBtn').addEventListener('click', ()=>{ try{ const s=localStorage.getItem(SAVE_KEY); if(!s){ log('No save found.','warn'); return; } const obj=JSON.parse(s); DAYS_LIMIT=obj.DAYS_LIMIT||30; state=obj.state; lastCity=obj.lastCity||lastCity; gi('gameControls').style.display='flex'; refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true }); randomFooter(); renderAll('Loaded save.'); }catch(e){ console.warn('Load failed',e); }});
-  gi('resetBtn').addEventListener('click', ()=>{ if(!confirm('Reset game?')) return; try{ localStorage.removeItem(SAVE_KEY); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; lastCity='hamilton'; gi('gameControls').style.display='none'; gi('log').innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button><button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; (root===document?document.body:root).prepend(ov); _startWired=false; wireStartDirect(); renderTravelCosts(); randomFooter(); log('Game reset. Choose a mode to start.'); });
+  gi('resetBtn').addEventListener('click', ()=>{ if(!confirm('Reset game?')) return; try{ localStorage.removeItem(SAVE_KEY); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; lastCity='hamilton'; gi('gameControls').style.display='none'; gi('log').innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel" style="background:#171a21;padding:20px;border-radius:12px;text-align:center;border:1px solid #232735;min-width:320px"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button> <button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; document.body.prepend(ov); _startWired=false; wireStartDirect(); renderTravelCosts(); randomFooter(); log('Game reset. Choose a mode to start.'); });
 
   // Pre-start visuals
   renderTravelCosts();
-  console.log('[Pedal Wars] bundle loaded');
+  console.log('[Pedal Wars] bundle loaded (Roadie-hardened)');
 })();
