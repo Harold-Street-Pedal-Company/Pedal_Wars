@@ -9,12 +9,17 @@
   const pick=(arr,r=Math.random)=>arr[Math.floor(r()*arr.length)];
   const stop=(e)=>{ try{e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();}catch(_){} };
 
-  // ---------- Roadie overlay hardening ----------
+  // ---------- Roadie overlay hardening + HIGH CONTRAST overlay ----------
   (function ensureOverlay(){
     const st=document.createElement('style');
     st.textContent = `
       #startOverlay, #pedalwars .overlay { position:fixed!important; inset:0!important; z-index:2147483647!important; pointer-events:auto!important; }
-      #startOverlay button { pointer-events:auto!important; cursor:pointer!important; }
+      #startOverlay .panel { background:#0b1220!important; color:#f1f5f9!important; border:1px solid #334155!important; box-shadow:0 10px 30px rgba(0,0,0,.6)!important; }
+      #startOverlay h2 { color:#ffffff!important; margin:0 0 8px!important; font-weight:800!important; letter-spacing:.3px!important; }
+      #startOverlay p { color:#e2e8f0!important; margin:6px 0 14px!important; }
+      #startOverlay button { pointer-events:auto!important; cursor:pointer!important; color:#0b1220!important; background:#60a5fa!important; border:1px solid #93c5fd!important; font-weight:700!important; padding:10px 14px!important; border-radius:10px!important; }
+      #startOverlay button:focus-visible { outline:3px solid #fbbf24!important; outline-offset:2px!important; }
+      #startOverlay button + button { margin-left:10px!important; }
     `;
     document.head.appendChild(st);
     function move(){
@@ -57,7 +62,6 @@
       cash:1500, debt:1000, rate:0.18, rep:0.10, cap:24,
       inv:Object.fromEntries(ITEMS.map(i=>[i.id,0])),
       markets:{}, featured:{}, lastCity:'hamilton',
-      // lock to avoid double-ticks; resilient unlock
       ticking:false
     };
   }
@@ -71,7 +75,6 @@
   // ---------- Deterministic daily pricing ----------
   function priceRNG(day, locId){ const s=(seed ^ (day*2654435761) ^ hashStr(String(locId)))>>>0; return mulberry32(s); }
   function computeFeaturedForDay(day){
-    // 1–2 items globally featured; no BigInt
     const pr = mulberry32(((seed>>>0) ^ ((day*1103515245 + 12345)>>>0))>>>0);
     const count = (pr() < 0.6) ? 1 : 2;
     const idxs = new Set(); while (idxs.size < count) idxs.add(Math.floor(pr()*ITEMS.length));
@@ -80,7 +83,7 @@
   function computeCityPricesForDay(day, locId, featuredIds){
     const loc = LOCATIONS.find(l=>l.id===locId)||LOCATIONS[0];
     const pr = priceRNG(day, locId);
-    const mood = 0.90 + pr()*0.30;    // city mood factor
+    const mood = 0.90 + pr()*0.30;   // city mood
     const locBase = LOC_FACTOR[locId] || 1;
     const repBoost = 1 + (state ? state.rep*0.1 : 0);
     const out = {};
@@ -88,13 +91,14 @@
       const [lo,hi]=it.base;
       const bias=(loc.bias?.[it.id] ?? loc.bias?.all ?? 1);
       let base = (lo + (hi-lo)*((pr()+pr()+pr())/3)) * bias * locBase * mood;
-      base *= (0.92 + pr()*0.28); // local noise
+      base *= (0.92 + pr()*0.28);
       if (featuredIds.includes(it.id)) {
         const up = pr() < 0.65;
         const mag = 0.40 + pr()*0.30; // 40–70%
         base = base * (up ? (1+mag) : (1-mag));
       }
-      out[it.id] = Math.max(5, Math.round(base/repBoost));
+      let price = Math.max(5, Math.round(base/repBoost));
+      out[it.id]=price;
     });
     return out;
   }
@@ -215,6 +219,55 @@
     renderStats(); renderMarket();
   }
 
+  // ---------- NEW: Wire Borrow / Repay / SellAll / Dump ----------
+  function wireActionButtons(){
+    const borrowBtn = gi('borrowBtn');
+    const repayBtn  = gi('repayBtn');
+    const sellAllBtn= gi('sellAllBtn');
+    const dumpBtn   = gi('dumpBtn');
+
+    if (borrowBtn && !borrowBtn._pw) {
+      borrowBtn.addEventListener('click', ()=>{
+        adjustDebt(+500); addCash(+500);
+        log('Borrowed $500 at current APR.','warn'); renderStats();
+      }); borrowBtn._pw = 1;
+    }
+    if (repayBtn && !repayBtn._pw) {
+      repayBtn.addEventListener('click', ()=>{
+        if (state?.debt<=0) { log('No debt to repay.','warn'); return; }
+        if (state.cash<=0) { log('No cash to repay.','bad'); return; }
+        const pay = Math.min(500, state.debt, state.cash);
+        adjustDebt(-pay); addCash(-pay);
+        log('Repaid '+fmt(pay)+'.','good'); renderStats();
+      }); repayBtn._pw = 1;
+    }
+    if (sellAllBtn && !sellAllBtn._pw) {
+      sellAllBtn.addEventListener('click', ()=>{
+        let total=0, sold=false;
+        const prices = state.markets[state.day][state.location].prices;
+        for (const k in state.inv) {
+          const q = state.inv[k]; if (q>0) { total += q*(prices[k]||0); state.inv[k]=0; sold=true; }
+        }
+        if (!sold) { log('Nothing to sell.','warn'); return; }
+        const fee = (state.location==='reverb')?50:0;
+        const net = Math.max(0,total-fee);
+        addCash(net);
+        log('Quick sold everything for '+fmt(total)+(fee?' (−'+fmt(fee)+' fee)':'')+' → '+fmt(net)+' net.','good');
+        renderAll();
+      }); sellAllBtn._pw = 1;
+    }
+    if (dumpBtn && !dumpBtn._pw) {
+      dumpBtn.addEventListener('click', ()=>{
+        const owned = ITEMS.filter(it=> (state.inv[it.id]||0) > 0);
+        if (!owned.length) { log('You own nothing to dump.','warn'); return; }
+        const it = pick(owned, rng);
+        state.inv[it.id] -= 1;
+        log('Dumped 1 '+it.name+' to free space.','warn');
+        renderStats(); renderMarket();
+      }); dumpBtn._pw = 1;
+    }
+  }
+
   // ---------- Travel ----------
   function travelCostFor(origin, dest){
     if(origin === dest) return 0;
@@ -232,7 +285,7 @@
     const from=LOCATIONS.find(l=>l.id===state.location).name; const to=LOCATIONS.find(l=>l.id===dest).name;
     if(dest!=='reverb') state.lastCity = dest;
     state.location = dest;
-    ensureMarketsForDay(state.day);
+    ensureMarketsForDay(state.day); // show dest’s snapshot (no re-rolls today)
     log(`${state.playerName} traveled ${from} → ${to} (${cost?('cost '+fmt(cost)):'free'})`, cost?'warn':'good');
     renderAll();
   });
@@ -241,7 +294,7 @@
   function endDay(){
     if(!state) return;
     if(state.ticking) return;
-    state.ticking = true;         // start critical section
+    state.ticking = true;
     try {
       if (state.day >= DAYS_LIMIT) { gameOver(); return; }
       const prev = state.day; state.day = prev + 1;
@@ -260,7 +313,7 @@
       console.error('[Pedal Wars] endDay error', e);
       log('Something hiccuped advancing the day; try again.', 'warn');
     } finally {
-      state.ticking = false;       // ALWAYS release lock
+      state.ticking = false;
     }
   }
   gi('nextBtn').addEventListener('click', endDay);
@@ -287,7 +340,7 @@ Rank: ${grade}`);
     state=null; DAYS_LIMIT=30;
     const ov=document.createElement('div');
     ov.id='startOverlay'; ov.className='overlay';
-    ov.innerHTML = `<div class="panel" style="background:#171a21;padding:20px;border-radius:12px;text-align:center;border:1px solid #232735;min-width:320px">
+    ov.innerHTML = `<div class="panel" style="background:#0b1220;padding:20px;border-radius:12px;text-align:center;border:1px solid #334155;min-width:320px">
       <h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p>
       <button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button>
       <button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button>
@@ -328,9 +381,12 @@ Rank: ${grade}`);
     ensureMarketsForDay(state.day);
     renderAll('New game started.');
     renderTravelCosts();
+    wireActionButtons(); // <-- ensure action buttons are live after game starts
   }
 
   // ---------- Initial UI ----------
   renderTravelCosts();
+  // In case of load->render without start, wire buttons once the DOM is there
+  wireActionButtons();
   console.log('[Pedal Wars] bundle loaded');
 })();
