@@ -47,21 +47,21 @@
 
   // ===== State =====
   let DAYS_LIMIT=30, state=null;
-  let dailyCache = {}; // day → loc → prices
+  let dailyCache = {}; // { [day]: { [locId]: { itemId: price } } }
 
-  // Build select early
-  (function(){ const sel=gi('locationSelect'); if(!sel||sel.options.length) return;
+  // Build location select early
+  (function(){ const sel=gi('locationSelect'); if(!sel||sel.options.length) return; 
     LOCATIONS.forEach(l=>{const o=document.createElement('option'); o.value=l.id; o.textContent=l.name; sel.appendChild(o);});
   })();
 
-  // ===== Deterministic pricing per (day,location) with shocks =====
+  // ===== Deterministic per-(day,location) pricing with controlled divergence =====
   function priceRNG(day, locId){ const s = (seed ^ (day*2654435761) ^ hashStr(String(locId)))>>>0; return mulberry32(s); }
   function computePricesFor(day, locId){
     const loc = LOCATIONS.find(l=>l.id===locId)||LOCATIONS[0];
     const pr  = priceRNG(day, locId);
-    const mood    = 0.90 + pr()*0.30;
-    const locBase = LOC_FACTOR[locId] || 1;
-    const shockCount = pr() < 0.55 ? 1 : 2;
+    const mood    = 0.90 + pr()*0.30;        // city mood 0.90..1.20
+    const locBase = LOC_FACTOR[locId] || 1;  // city baseline
+    const shockCount = pr() < 0.55 ? 1 : 2;  // 1–2 items spike/crash
     const shockIdxs = new Set(); while(shockIdxs.size < shockCount) shockIdxs.add(Math.floor(pr()*ITEMS.length));
     const repBoost = 1 + (state ? state.rep*0.1 : 0);
     const out = {};
@@ -70,7 +70,7 @@
       const bias = (loc.bias?.[it.id] ?? loc.bias?.all ?? 1);
       let roll  = (pr()+pr()+pr())/3;
       let price = (lo + (hi-lo)*roll) * bias * locBase * mood;
-      price *= (0.92 + pr()*0.28); // local noise
+      price *= (0.92 + pr()*0.28);
       if (shockIdxs.has(idx)) price *= (pr() < 0.5) ? (2.0 + pr()*0.5) : (0.40 + pr()*0.20);
       price = Math.round(Math.max(5, price / repBoost));
       out[it.id]=price;
@@ -83,7 +83,7 @@
     return dailyCache[day][locId];
   }
 
-  // ===== Start buttons (direct + delegated) =====
+  // ===== Start buttons (direct + delegated; also capture-phase backup) =====
   function wireStartButtons(){
     const qb=gi('quickBtn'), nb=gi('normalBtn');
     qb && qb.addEventListener('click', ()=>{DAYS_LIMIT=7; startGame();});
@@ -91,14 +91,27 @@
   }
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', wireStartButtons, {once:true}); } else { wireStartButtons(); }
 
+  // Capture-phase: intercept even if theme wrappers are aggressive
+  function startDelegated(e){
+    if(!(root.contains ? root.contains(e.target) : true)) return;
+    const t = e.target.closest ? e.target.closest('#quickBtn, #normalBtn') : null;
+    if(!t) return;
+    stop(e);
+    if(t.id==='quickBtn'){DAYS_LIMIT=7; startGame();} else {DAYS_LIMIT=30; startGame();}
+  }
+  document.addEventListener('click', startDelegated, true);
+  document.addEventListener('pointerdown', startDelegated, true);
+  document.addEventListener('touchstart', startDelegated, {capture:true, passive:false});
+
   // ===== Game start / init =====
   function startGame(){
-    if(state) return;
+    if(state) return; // prevent double prompt
     const name=(prompt('Enter player name:','Player')||'Player').trim().slice(0,16);
     state=initState(name);
-    const ov=gi('startOverlay'); if(ov){ ov.setAttribute('aria-hidden','true'); ov.remove(); }
+    const ov=gi('startOverlay'); if(ov){ ov.setAttribute('aria-hidden','true'); ov.remove(); } // remove overlay entirely
     gi('gameControls')?.style && (gi('gameControls').style.display='flex');
-    // Day 1 prices
+
+    // Day 1 prices (stable within day)
     state.prices     = {...getPricesFor(state.day, state.location)};
     state.lastPrices = {...state.prices};
     renderAll('New game started.');
@@ -112,15 +125,14 @@
   // ===== Render =====
   function renderAll(msg){ renderStats(); renderMarket(); renderTravelCosts(); if(msg) log(msg); }
   function renderStats(){
-    const used = Object.values(state.inv).reduce((a,b)=>a+b,0);
-    const loc  = LOCATIONS.find(l=>l.id===state.location);
+    const used=Object.values(state.inv).reduce((a,b)=>a+b,0);
+    const loc=LOCATIONS.find(l=>l.id===state.location);
     gi('day').textContent   = `${state.day}/${DAYS_LIMIT}`;
     gi('cash').textContent  = fmt(state.cash);
     gi('debt').textContent  = fmt(state.debt);
     gi('rate').textContent  = (state.rate*100).toFixed(1)+'% APR';
     gi('rep').textContent   = Math.round(state.rep*100)+'%';
-    gi('used').textContent  = used;
-    gi('cap').textContent   = state.cap;
+    gi('used').textContent  = used; gi('cap').textContent=state.cap;
     gi('daysLeft').textContent = `${DAYS_LIMIT-state.day+1} days left`;
     gi('locInfo').textContent  = `${loc.name} — ${loc.flavor}`;
     gi('repMeter').style.width = Math.round(state.rep*100)+'%';
@@ -172,8 +184,9 @@
   function buy(id,qty){ const cost=state.prices[id]*qty; if(capacityUsed()+qty>state.cap){ log('Not enough space.','bad'); return; } if(cost>state.cash){ log('Not enough cash.','bad'); return; } addCash(-cost); state.inv[id]+=qty; bumpRep(+0.002*qty); log('Bought '+qty+' × '+ITEMS.find(x=>x.id===id).name+' for '+fmt(cost)+'.','good'); renderStats(); renderMarket(); }
   function sell(id,qty){ const have=state.inv[id]||0; if(qty>have){ log('You do not own that many.','bad'); return; } const gross=state.prices[id]*qty; const fee=(state.location==='reverb')?50:0; const net=Math.max(0,gross-fee); state.inv[id]-=qty; addCash(net); bumpRep(+0.001*qty); log(fee?'Sold '+qty+' × '+ITEMS.find(x=>x.id===id).name+' for '+fmt(gross)+' (−'+fmt(fee)+' fee) → '+fmt(net)+'.':'Sold '+qty+' × '+ITEMS.find(x=>x.id===id).name+' for '+fmt(net)+'.'); renderStats(); renderMarket(); }
   function quickSellAll(){ let total=0,sold=false; Object.keys(state.inv).forEach(k=>{ const q=state.inv[k]; if(q>0){ total+=q*state.prices[k]; state.inv[k]=0; sold=true; }}); if(!sold){ log('Nothing to sell.','warn'); return; } const fee=(state.location==='reverb')?50:0; const net=Math.max(0,total-fee); addCash(net); log('Quick sold everything for '+fmt(total)+(fee?' (−'+fmt(fee)+' fee)':'')+' → '+fmt(net)+' net.','good'); renderAll(); }
+  function dumpOne(){ const owned=ITEMS.filter(it=>state.inv[it.id]>0); if(!owned.length){ log('You own nothing to dump.','warn'); return; } const it=pick(owned); state.inv[it.id]-=1; log('Dumped 1 '+it.name+' to free space.','warn'); renderStats(); renderMarket(); }
 
-  // Travel & costs (no price change mid-day; deltas vs that city’s yesterday)
+  // ===== Travel (deltas vs that city’s previous day; prices don’t change mid-day) =====
   function travelCostFor(dest){ if(dest==='reverb') return 0; let h=0; for(let i=0;i<dest.length;i++){ h=(h*31+dest.charCodeAt(i))>>>0; } const r=mulberry32((state.day*2654435761 ^ h)>>>0)(); return Math.floor(50 + r*100); }
   function renderTravelCosts(){ const s=LOCATIONS.map(l=>l.name+': '+fmt(travelCostFor(l.id))).join(' | '); const el=gi('travelCosts'); if(el) el.textContent='Travel Costs: '+s; }
   function travel(dest){
@@ -190,7 +203,7 @@
   }
   function travelEvent(){ const r=mulberry32(((Date.now()%1e9)+Math.floor(rng()*1e9))>>>0)(); if(r<0.20){ const gain=Math.floor(50+r*250); addCash(gain); log('Scored a pop-up flip on arrival: +'+fmt(gain)+'.','good'); } else if(r<0.40){ const loss=Math.min(state.cash,Math.floor(30+r*200)); addCash(-loss); log('Road fees hit: −'+fmt(loss)+'.','bad'); } else if(r<0.60){ bumpRep(+0.02); log('Met a demo artist — reputation up.','good'); } else if(r<0.75){ const interest=Math.floor(state.debt*0.001*(1+Math.floor(r*3))); adjustDebt(+interest); log('Travel delays increased costs: +'+fmt(interest)+' debt.','warn'); } else if(r<0.90){ const refund=Math.floor(20+r*120); addCash(refund); log('Returned a defective part and got '+fmt(refund)+' back.','good'); } else { bumpRep(-0.015); log('Buyer flaked on meetup — tiny rep hit.','warn'); } }
 
-  // End Day (prices change; deltas vs yesterday)
+  // ===== End Day (prices change; deltas vs yesterday) =====
   function endDay(){
     if(!state) return;
     if(state.day>=DAYS_LIMIT){ gameOver(); return; }
@@ -202,35 +215,36 @@
     renderAll('Day '+prevDay+' → '+state.day+' complete.');
     if(state.day>=DAYS_LIMIT){ log('Final day reached. Next press ends the game.','warn'); }
   }
-  function dailyEvent(){ const roll=rng(); if(roll<0.20){ bumpRep(+0.02); footer('Hype building…'); } else if(roll<0.35){ bumpRep(-0.01); footer('Market feels soft.'); } else if(roll<0.45){ const loss=Math.min(state.cash, Math.floor(50+rng()*200)); addCash(-loss); bumpRep(-0.015); footer('Account took a ding.'); } else if(roll<0.55){ const owned=ITEMS.filter(i=>state.inv[i.id]>0); if(owned.length){ const it=pick(owned); const take=Math.max(1,Math.floor(state.inv[it.id]*(0.25+rng()*0.5))); state.inv[it.id]=Math.max(0,state.inv[it.id]-take); footer('Paperwork error.'); } } else if(roll<0.70){ footer('Buzz is in the air.'); } else { footer('Quiet day.'); } }
-  function footer(text){ gi('eventFooter').textContent = text; }
 
-  // Save/Load/Reset
+  // ===== Daily events & footer =====
+  function dailyEvent(){ const roll=rng(); if(roll<0.20){ bumpRep(+0.02); footer('Hype building…'); } else if(roll<0.35){ bumpRep(-0.01); footer('Market feels soft.'); } else if(roll<0.45){ const loss=Math.min(state.cash, Math.floor(50+rng()*200)); addCash(-loss); bumpRep(-0.015); footer('Account took a ding.'); } else if(roll<0.55){ const owned=ITEMS.filter(i=>state.inv[i.id]>0); if(owned.length){ const it=pick(owned); const take=Math.max(1,Math.floor(state.inv[it.id]*(0.25+rng()*0.5))); state.inv[it.id]=Math.max(0,state.inv[it.id]-take); footer('Paperwork error.'); } } else if(roll<0.70){ footer('Buzz is in the air.'); } else { footer('Quiet day.'); } }
+  function footer(text){ const el=gi('eventFooter'); if(el) el.textContent = text; }
+
+  // ===== Save / Load / Reset =====
   function save(){ try{ localStorage.setItem('pedalwars_save_v1', JSON.stringify({state,DAYS_LIMIT})); log('Game saved.'); }catch(e){ console.warn('Save failed',e); } }
   function load(){ try{
       const s=localStorage.getItem('pedalwars_save_v1'); if(!s){ log('No save found.','warn'); return; }
       const obj=JSON.parse(s); DAYS_LIMIT=obj.DAYS_LIMIT||30; state=obj.state;
       refreshPricesForCurrentDayAndLocation({ compareToPrevDay:true });
-      gi('gameControls')?.style && (gi('gameControls').style.display='flex');
-      renderAll('Loaded save.'); setTimeout(()=>renderStats(),0);
+      const gc=gi('gameControls'); if(gc) gc.style.display='flex';
+      renderAll('Loaded save.'); 
     }catch(e){ console.warn('Load failed',e); } }
-  function resetGame(){ if(confirm('Reset game?')){ try{ localStorage.removeItem('pedalwars_save_v1'); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; const gc=gi('gameControls'); if(gc) gc.style.display='none'; const ul=gi('log'); if(ul) ul.innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button><button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; if(root===document){document.body.prepend(ov);}else{root.prepend(ov);} wireStartButtons(); renderTravelCosts(); log('Game reset. Choose a mode to start.'); } }
+  function resetGame(){ if(confirm('Reset game?')){ try{ localStorage.removeItem('pedalwars_save_v1'); }catch(e){} state=null; DAYS_LIMIT=30; dailyCache={}; const gc=gi('gameControls'); if(gc) gc.style.display='none'; const ul=gi('log'); if(ul) ul.innerHTML=''; const ov=document.createElement('div'); ov.id='startOverlay'; ov.className='overlay'; ov.innerHTML=`<div class="panel"><h2>🎛️ Pedal Wars</h2><p>Choose a mode:</p><button id="quickBtn" class="primary" type="button">Quick Play (7 Days)</button><button id="normalBtn" class="primary" type="button">Normal Play (30 Days)</button></div>`; if(root===document){document.body.prepend(ov);}else{root.prepend(ov);} wireStartButtons(); log('Game reset. Choose a mode to start.'); } }
   function gameOver(){ let liquidation=0; for(const k in state.inv) liquidation+=state.inv[k]*state.prices[k]; const net=state.cash+liquidation-state.debt; const grade= net>10000?'Legend': net>5000?'Pro': net>2000?'Hobbyist':'Weekend Warrior'; alert(`Game Over\nPlayer: ${state.playerName}\nNet Worth: ${fmt(net)}\nReputation: ${Math.round(state.rep*100)}%\nRank: ${grade}`); }
 
-  // Global delegated handlers (capture-phase)
+  // ===== Global delegated handlers for all other buttons (capture-phase) =====
   function getQtyFor(act, id){ const input = gi(`${act === 'buy' ? 'b_' : 's_'}${id}`); const v = parseInt(input && input.value || '0', 10); return isNaN(v) ? 0 : v; }
   function handleAnyPointer(e){
     if (!(root.contains ? root.contains(e.target) : true)) return;
     const btn = e.target.closest && e.target.closest('button'); if(!btn) return;
     stop(e);
-    if(btn.id === 'quickBtn'){ DAYS_LIMIT=7; startGame(); return; }
-    if(btn.id === 'normalBtn'){ DAYS_LIMIT=30; startGame(); return; }
     const act = btn.getAttribute('data-act');
     if(act === 'buy' || act === 'sell'){ const id = btn.getAttribute('data-id'); const qty = getQtyFor(act, id); if(qty > 0){ act === 'buy' ? buy(id, qty) : sell(id, qty); } return; }
     switch(btn.id){
       case 'borrowBtn': return void doBorrow();
       case 'repayBtn' : return void doRepay();
       case 'sellAllBtn': return void quickSellAll();
+      case 'dumpBtn'   : return void dumpOne();
       case 'travelBtn' : return void travel(gi('locationSelect')?.value || state?.location || 'hamilton');
       case 'nextBtn'   : return void endDay();
       case 'saveBtn'   : return void save();
@@ -248,8 +262,11 @@
     stop(e); el.click();
   }, true);
 
-  // Pre-start UI
-  renderTravelCosts();
+  // ===== Init pre-start visuals =====
+  (function renderTravelCosts(){ 
+    const s=LOCATIONS.map(l=>l.name+': '+fmt(travelCostFor(l.id))).join(' | '); 
+    const el=gi('travelCosts'); if(el) el.textContent='Travel Costs: '+s; 
+  })();
 
-  try{ console.assert(typeof log==='function','log() defined'); }catch(e){}
+  try { console.assert(typeof log === 'function', 'log() defined'); console.log('[Pedal Wars] bundle executed'); } catch(e){}
 })();
