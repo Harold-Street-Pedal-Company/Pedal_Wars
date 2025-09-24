@@ -118,7 +118,25 @@
   // ---------- Render/UI ----------
   function log(msg, kind){ const ul=gi('log'); if(!ul){ console.log('[Pedal Wars]', msg); return; } const li=document.createElement('li'); if(kind) li.className=kind; li.textContent=msg; ul.prepend(li); }
   function footer(text){ gi('eventFooter').textContent = text; }
+
+  // NEW: Inject “Interest Due” row under the “Debt” row if it’s missing
+  function ensureInterestRow(){
+    if (gi('interestDue')) return;
+    const stats = document.querySelector('#pedalwars .stats');
+    if (!stats) return;
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<span>Interest Due</span><strong id="interestDue"></strong>`;
+    const debtStrong = gi('debt');
+    if (debtStrong && debtStrong.parentElement && debtStrong.parentElement.classList.contains('row')) {
+      debtStrong.parentElement.after(row);
+    } else {
+      stats.appendChild(row);
+    }
+  }
+
   function renderStats(){
+    ensureInterestRow();
     const used = Object.values(state.inv).reduce((a,b)=>a+b,0);
     const loc  = LOCATIONS.find(l=>l.id===state.location);
     const locBlurb = (state.location==='reverb')
@@ -127,6 +145,7 @@
     gi('day').textContent   = `${state.day}/${DAYS_LIMIT}`;
     gi('cash').textContent  = fmt(state.cash);
     gi('debt').textContent  = fmt(state.debt);
+    gi('interestDue') && (gi('interestDue').textContent = fmt(state.intBucket || 0)); // <-- show bucket
     gi('rate').textContent  = (state.rate*100).toFixed(1)+'% APR';
     gi('rep').textContent   = Math.round(state.rep*100)+'%';
     gi('used').textContent  = used; gi('cap').textContent = state.cap;
@@ -134,6 +153,7 @@
     gi('locInfo').textContent  = locBlurb;
     gi('repMeter').style.width = Math.round(state.rep*100)+'%';
   }
+
   function renderMarket(){
     ensureMarketsForDay(state.day);
     const { prices, last } = state.markets[state.day][state.location];
@@ -253,10 +273,10 @@
       // Accrue interest daily into debt AND intBucket
       if(state.debt>0){
         const daily=state.rate/365;
-        const inc=Math.floor(state.debt*daily); // keep math honest; can be small on low debt
+        const inc=Math.floor(state.debt*daily);
         if (inc>0){
           adjustDebt(+inc);
-          state.intBucket += inc; // track portion of debt that is interest
+          state.intBucket = Math.max(0, (state.intBucket||0) + inc);
           log(`Interest accrued ${fmt(inc)}.`, 'warn');
         }
       }
@@ -302,12 +322,12 @@ Rank: ${grade}`);
       if (state.cash<=0) { log('No cash to repay.','bad'); return; }
       const pay = Math.min(500, state.debt, state.cash);
 
-      // NEW: pay interest first, then principal
-      const interestPortion = Math.min(pay, state.intBucket);
+      // Pay interest first, then principal
+      const interestPortion = Math.min(pay, state.intBucket||0);
       const principalPortion = pay - interestPortion;
 
-      state.intBucket = Math.max(0, state.intBucket - interestPortion);
-      adjustDebt(-pay);           // reduce total debt by full payment
+      state.intBucket = Math.max(0, (state.intBucket||0) - interestPortion);
+      adjustDebt(-pay);
       addCash(-pay);
 
       log(`Repaid ${fmt(pay)} — ${fmt(interestPortion)} interest + ${fmt(principalPortion)} principal.`, 'good');
@@ -335,7 +355,7 @@ Rank: ${grade}`);
   }, true);
 
   // ---------- Save/Load/Reset ----------
-  const SAVE_KEY='pedalwars_save_v3'; // bump to avoid mixing with old saves lacking intBucket
+  const SAVE_KEY='pedalwars_save_v3';
   gi('saveBtn').addEventListener('click', ()=>{ try{
     localStorage.setItem(SAVE_KEY, JSON.stringify({state, DAYS_LIMIT}));
     log('Game saved.');
@@ -344,8 +364,7 @@ Rank: ${grade}`);
   gi('loadBtn').addEventListener('click', ()=>{ try{
     const s=localStorage.getItem(SAVE_KEY); if(!s){ log('No save found.','warn'); return; }
     const obj=JSON.parse(s); state=obj.state; DAYS_LIMIT=obj.DAYS_LIMIT||30;
-    // migrate older saves gracefully
-    if (typeof state.intBucket !== 'number') state.intBucket = 0;
+    if (typeof state.intBucket !== 'number') state.intBucket = 0; // migrate old saves
     gi('gameControls').style.display='flex';
     ensureMarketsForDay(state.day); renderAll('Loaded save.');
   }catch(e){ console.warn('Load failed',e); }});
@@ -353,8 +372,7 @@ Rank: ${grade}`);
   gi('resetBtn').addEventListener('click', ()=>{
     if(!confirm('Reset game?')) return;
     try{ localStorage.removeItem(SAVE_KEY); }catch(e){}
-    // Clear feed immediately and unconditionally
-    const ul=gi('log'); if(ul) ul.innerHTML='';
+    const ul=gi('log'); if(ul) ul.innerHTML=''; // clear feed
     state=null; DAYS_LIMIT=30;
     const ov=document.createElement('div');
     ov.id='startOverlay'; ov.className='overlay';
