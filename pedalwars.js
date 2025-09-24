@@ -1,13 +1,13 @@
 /* Pedal Wars — external JS, Roadie-hardened, per-city daily markets with global YouTube features */
 (function () {
-  // ---------- Helpers (FIX: gi is now global document.getElementById) ----------
-  const gi = (id) => document.getElementById(id);  // <-- FIXED
+  // ---------- Helpers ----------
+  const gi = (id) => document.getElementById(id);
   const fmt = (n) => "$" + Math.floor(Number(n || 0)).toLocaleString();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   function mulberry32(a){return function(){let t=(a+=0x6d2b79f5);t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296}}
   function hashStr(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; }
-  const pick = (arr, r=Math.random)=>arr[Math.floor(r()*arr.length)];
-  const stop = (e)=>{ try{ e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); }catch(_){} };
+  const pick=(arr,r=Math.random)=>arr[Math.floor(r()*arr.length)];
+  const stop=(e)=>{ try{e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();}catch(_){} };
 
   // ---------- Roadie overlay hardening ----------
   (function ensureOverlay(){
@@ -17,18 +17,13 @@
       #startOverlay button { pointer-events:auto!important; cursor:pointer!important; }
     `;
     document.head.appendChild(st);
-
     function move(){
-      const ov = gi('startOverlay');
-      if (!ov) return;
-      if (ov.parentNode !== document.body) document.body.prepend(ov);
-      ov.style.zIndex = '2147483647';
-      ov.style.position = 'fixed';
-      ov.style.pointerEvents = 'auto';
+      const ov=gi('startOverlay'); if(!ov) return;
+      if(ov.parentNode!==document.body) document.body.prepend(ov);
+      ov.style.zIndex='2147483647'; ov.style.position='fixed'; ov.style.pointerEvents='auto';
     }
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', move, {once:true}); else move();
-    const mo = new MutationObserver(move);
-    mo.observe(document.documentElement, {subtree:true, childList:true});
+    if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', move, {once:true}); else move();
+    new MutationObserver(move).observe(document.documentElement,{subtree:true,childList:true});
   })();
 
   // ---------- Game data ----------
@@ -55,39 +50,37 @@
   let DAYS_LIMIT = 30;
   let state = null;
 
-  // Per-day, per-city market cache
-  // state.markets[day][locId] = { prices: {...}, last: {...} }
-  // state.featured[day] = [itemId,...]
+  // per-day, per-city markets + global featured item ids
   function initState(playerName){
     return {
       playerName, day:1, location:'hamilton',
       cash:1500, debt:1000, rate:0.18, rep:0.10, cap:24,
       inv:Object.fromEntries(ITEMS.map(i=>[i.id,0])),
-      markets:{}, featured:{}, lastCity:'hamilton'
+      markets:{}, featured:{}, lastCity:'hamilton',
+      // lock to avoid double-ticks; resilient unlock
+      ticking:false
     };
   }
 
-  // Build city select
+  // Build city select once
   (function buildSelect(){
-    const sel=gi('locationSelect'); if(!sel) return;
-    if(sel.options.length===0){
-      LOCATIONS.forEach(l=>{ const o=document.createElement('option'); o.value=l.id; o.textContent=l.name; sel.appendChild(o); });
-    }
+    const sel=gi('locationSelect'); if(!sel || sel.options.length) return;
+    LOCATIONS.forEach(l=>{ const o=document.createElement('option'); o.value=l.id; o.textContent=l.name; sel.appendChild(o); });
   })();
 
   // ---------- Deterministic daily pricing ----------
   function priceRNG(day, locId){ const s=(seed ^ (day*2654435761) ^ hashStr(String(locId)))>>>0; return mulberry32(s); }
   function computeFeaturedForDay(day){
+    // 1–2 items globally featured; no BigInt
     const pr = mulberry32(((seed>>>0) ^ ((day*1103515245 + 12345)>>>0))>>>0);
     const count = (pr() < 0.6) ? 1 : 2;
-    const idxs = new Set();
-    while (idxs.size < count) idxs.add(Math.floor(pr()*ITEMS.length));
+    const idxs = new Set(); while (idxs.size < count) idxs.add(Math.floor(pr()*ITEMS.length));
     return [...idxs].map(i=>ITEMS[i].id);
   }
   function computeCityPricesForDay(day, locId, featuredIds){
     const loc = LOCATIONS.find(l=>l.id===locId)||LOCATIONS[0];
     const pr = priceRNG(day, locId);
-    const mood = 0.90 + pr()*0.30;   // city mood
+    const mood = 0.90 + pr()*0.30;    // city mood factor
     const locBase = LOC_FACTOR[locId] || 1;
     const repBoost = 1 + (state ? state.rep*0.1 : 0);
     const out = {};
@@ -95,14 +88,13 @@
       const [lo,hi]=it.base;
       const bias=(loc.bias?.[it.id] ?? loc.bias?.all ?? 1);
       let base = (lo + (hi-lo)*((pr()+pr()+pr())/3)) * bias * locBase * mood;
-      base *= (0.92 + pr()*0.28);
+      base *= (0.92 + pr()*0.28); // local noise
       if (featuredIds.includes(it.id)) {
         const up = pr() < 0.65;
         const mag = 0.40 + pr()*0.30; // 40–70%
         base = base * (up ? (1+mag) : (1-mag));
       }
-      let price = Math.max(5, Math.round(base/repBoost));
-      out[it.id]=price;
+      out[it.id] = Math.max(5, Math.round(base/repBoost));
     });
     return out;
   }
@@ -119,7 +111,7 @@
     }
   }
 
-  // ---------- Render ----------
+  // ---------- Render/UI ----------
   function log(msg, kind){ const ul=gi('log'); if(!ul){ console.log('[Pedal Wars]', msg); return; } const li=document.createElement('li'); if(kind) li.className=kind; li.textContent=msg; ul.prepend(li); }
   function footer(text){ gi('eventFooter').textContent = text; }
   function renderStats(){
@@ -166,7 +158,7 @@
         </td>`;
       tb.appendChild(tr);
     });
-    // bind buys/sells
+
     tb.querySelectorAll('button[data-act]').forEach(btn=>{
       btn.onclick = ()=>{
         const id = btn.getAttribute('data-id');
@@ -176,7 +168,7 @@
         if(act==='buy') buy(id, qty); else sell(id, qty);
       };
     });
-    // daily featured message
+
     const feats = state.featured[state.day] || [];
     if (feats.length) {
       const names = feats.map(id=>ITEMS.find(i=>i.id===id).name).join(' & ');
@@ -240,30 +232,50 @@
     const from=LOCATIONS.find(l=>l.id===state.location).name; const to=LOCATIONS.find(l=>l.id===dest).name;
     if(dest!=='reverb') state.lastCity = dest;
     state.location = dest;
-    ensureMarketsForDay(state.day); // show dest’s snapshot (no re-rolls today)
+    ensureMarketsForDay(state.day);
     log(`${state.playerName} traveled ${from} → ${to} (${cost?('cost '+fmt(cost)):'free'})`, cost?'warn':'good');
     renderAll();
   });
 
-  // ---------- Day advance (single tick, debounced) ----------
-  let _endLock=false, _endTs=0;
+  // ---------- End Day (single tick, resilient lock) ----------
   function endDay(){
     if(!state) return;
-    const now=Date.now(); if(_endLock || (now-_endTs)<250) return; _endLock=true; _endTs=now;
+    if(state.ticking) return;
+    state.ticking = true;         // start critical section
+    try {
+      if (state.day >= DAYS_LIMIT) { gameOver(); return; }
+      const prev = state.day; state.day = prev + 1;
 
-    if (state.day >= DAYS_LIMIT) { _endLock=false; return gameOver(); }
-    const prev = state.day; state.day = prev + 1;
+      if(state.debt>0){
+        const daily=state.rate/365; const inc=Math.floor(state.debt*daily);
+        adjustDebt(+inc); if(inc>0) log(`Interest accrued ${fmt(inc)}.`,'warn');
+      }
+      const storage = Math.floor(capacityUsed()*2);
+      if(storage>0){ addCash(-storage); log(`Storage fees ${fmt(storage)}.`,'warn'); }
 
-    if(state.debt>0){ const daily=state.rate/365; const inc=Math.floor(state.debt*daily); adjustDebt(+inc); if(inc>0) log(`Interest accrued ${fmt(inc)}.`,'warn'); }
-    const storage = Math.floor(capacityUsed()*2); if(storage>0){ addCash(-storage); log(`Storage fees ${fmt(storage)}.`,'warn'); }
-
-    ensureMarketsForDay(state.day); // builds all cities for new day
-    renderAll(`Day ${prev} → ${state.day} complete.`);
-    if (state.day >= DAYS_LIMIT) log('Final day reached. Next press ends the game.','warn');
-
-    setTimeout(()=>{ _endLock=false; }, 250);
+      ensureMarketsForDay(state.day);     // build all cities for the new day
+      renderAll(`Day ${prev} → ${state.day} complete.`);
+      if (state.day >= DAYS_LIMIT) log('Final day reached. Next press ends the game.','warn');
+    } catch (e) {
+      console.error('[Pedal Wars] endDay error', e);
+      log('Something hiccuped advancing the day; try again.', 'warn');
+    } finally {
+      state.ticking = false;       // ALWAYS release lock
+    }
   }
   gi('nextBtn').addEventListener('click', endDay);
+
+  function gameOver(){
+    let liquidation=0; const today=state.markets[state.day]?.[state.location]?.prices || {};
+    for(const k in state.inv){ liquidation += (state.inv[k]||0) * (today[k]||0); }
+    const net = state.cash + liquidation - state.debt;
+    const grade = net>10000?'Legend': net>5000?'Pro': net>2000?'Hobbyist':'Weekend Warrior';
+    alert(`Game Over
+Player: ${state.playerName}
+Net Worth: ${fmt(net)}
+Reputation: ${Math.round(state.rep*100)}%
+Rank: ${grade}`);
+  }
 
   // ---------- Save/Load/Reset ----------
   const SAVE_KEY='pedalwars_save_v2';
@@ -284,7 +296,7 @@
     wireStart(); renderTravelCosts(); gi('log').innerHTML=''; log('Game reset. Choose a mode to start.');
   });
 
-  // ---------- Start wiring (direct + delegated + keyboard) ----------
+  // ---------- Start wiring ----------
   function wireStart(){
     const qb=gi('quickBtn'), nb=gi('normalBtn');
     if(qb && !qb._pw){ qb.addEventListener('click', ()=>{DAYS_LIMIT=7;  startGame();}); qb._pw=1; }
@@ -311,8 +323,8 @@
     if(state) return;
     const name=(prompt('Enter player name:','Player')||'Player').trim().slice(0,16);
     state = initState(name);
-    const ov=gi('startOverlay'); if(ov) ov.remove();
-    const gc=gi('gameControls'); if(gc) gc.style.display='flex';
+    gi('startOverlay')?.remove();
+    gi('gameControls') && (gi('gameControls').style.display='flex');
     ensureMarketsForDay(state.day);
     renderAll('New game started.');
     renderTravelCosts();
