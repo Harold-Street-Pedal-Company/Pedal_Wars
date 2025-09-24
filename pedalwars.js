@@ -1,8 +1,7 @@
 /* Pedal Wars — external JS, Roadie-hardened, per-city daily markets with global YouTube features */
 (function () {
-  // ---------- Scoped helpers ----------
-  const root = document.getElementById('pedalwars') || document;
-  const gi = (id) => (root === document ? document.getElementById(id) : root.querySelector(`#${id}`));
+  // ---------- Helpers (FIX: gi is now global document.getElementById) ----------
+  const gi = (id) => document.getElementById(id);  // <-- FIXED
   const fmt = (n) => "$" + Math.floor(Number(n || 0)).toLocaleString();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   function mulberry32(a){return function(){let t=(a+=0x6d2b79f5);t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296}}
@@ -17,7 +16,7 @@
       #startOverlay, #pedalwars .overlay { position:fixed!important; inset:0!important; z-index:2147483647!important; pointer-events:auto!important; }
       #startOverlay button { pointer-events:auto!important; cursor:pointer!important; }
     `;
-    (root===document?document.head:root).appendChild(st);
+    document.head.appendChild(st);
 
     function move(){
       const ov = gi('startOverlay');
@@ -56,9 +55,9 @@
   let DAYS_LIMIT = 30;
   let state = null;
 
-  // Per-day, per-city market cache:
-  // state.markets[day][locId] = { prices: {itemId: price}, last: {itemId: prevDayPrice} }
-  // Featured items per-day (global): state.featured[day] = [itemId, ...]
+  // Per-day, per-city market cache
+  // state.markets[day][locId] = { prices: {...}, last: {...} }
+  // state.featured[day] = [itemId,...]
   function initState(playerName){
     return {
       playerName, day:1, location:'hamilton',
@@ -79,8 +78,7 @@
   // ---------- Deterministic daily pricing ----------
   function priceRNG(day, locId){ const s=(seed ^ (day*2654435761) ^ hashStr(String(locId)))>>>0; return mulberry32(s); }
   function computeFeaturedForDay(day){
-    // 1–2 globally featured items per day
-    const pr = mulberry32((seed ^ (day*11400714819323198485n % 0xffffffffn))>>>0);
+    const pr = mulberry32(((seed>>>0) ^ ((day*1103515245 + 12345)>>>0))>>>0);
     const count = (pr() < 0.6) ? 1 : 2;
     const idxs = new Set();
     while (idxs.size < count) idxs.add(Math.floor(pr()*ITEMS.length));
@@ -89,7 +87,7 @@
   function computeCityPricesForDay(day, locId, featuredIds){
     const loc = LOCATIONS.find(l=>l.id===locId)||LOCATIONS[0];
     const pr = priceRNG(day, locId);
-    const mood = 0.90 + pr()*0.30;       // city mood
+    const mood = 0.90 + pr()*0.30;   // city mood
     const locBase = LOC_FACTOR[locId] || 1;
     const repBoost = 1 + (state ? state.rep*0.1 : 0);
     const out = {};
@@ -97,21 +95,17 @@
       const [lo,hi]=it.base;
       const bias=(loc.bias?.[it.id] ?? loc.bias?.all ?? 1);
       let base = (lo + (hi-lo)*((pr()+pr()+pr())/3)) * bias * locBase * mood;
-      base *= (0.92 + pr()*0.28); // local noise
-      // Global daily swing if featured
+      base *= (0.92 + pr()*0.28);
       if (featuredIds.includes(it.id)) {
-        // ±40–70% swing applied globally; favor upside a bit
         const up = pr() < 0.65;
         const mag = 0.40 + pr()*0.30; // 40–70%
         base = base * (up ? (1+mag) : (1-mag));
       }
-      // Round and apply reputation discount (buyers like you)
       let price = Math.max(5, Math.round(base/repBoost));
       out[it.id]=price;
     });
     return out;
   }
-
   function ensureMarketsForDay(day){
     if (!state.markets[day]) {
       const featured = computeFeaturedForDay(day);
@@ -126,10 +120,8 @@
   }
 
   // ---------- Render ----------
-  function renderAll(msg){ renderStats(); renderMarket(); renderTravelCosts(); if(msg) log(msg); }
   function log(msg, kind){ const ul=gi('log'); if(!ul){ console.log('[Pedal Wars]', msg); return; } const li=document.createElement('li'); if(kind) li.className=kind; li.textContent=msg; ul.prepend(li); }
   function footer(text){ gi('eventFooter').textContent = text; }
-
   function renderStats(){
     const used = Object.values(state.inv).reduce((a,b)=>a+b,0);
     const loc  = LOCATIONS.find(l=>l.id===state.location);
@@ -146,7 +138,6 @@
     gi('locInfo').textContent  = locBlurb;
     gi('repMeter').style.width = Math.round(state.rep*100)+'%';
   }
-
   function renderMarket(){
     ensureMarketsForDay(state.day);
     const { prices, last } = state.markets[state.day][state.location];
@@ -175,7 +166,6 @@
         </td>`;
       tb.appendChild(tr);
     });
-
     // bind buys/sells
     tb.querySelectorAll('button[data-act]').forEach(btn=>{
       btn.onclick = ()=>{
@@ -186,14 +176,12 @@
         if(act==='buy') buy(id, qty); else sell(id, qty);
       };
     });
-
     // daily featured message
     const feats = state.featured[state.day] || [];
     if (feats.length) {
       const names = feats.map(id=>ITEMS.find(i=>i.id===id).name).join(' & ');
       footer(`${state.playerName}'s ${names} was featured on a big YouTube channel — prices swung everywhere today.`);
     } else {
-      // fallback chatter
       const lines = [
         `${state.playerName} hears rumor of a limited drop.`,
         `A local blog mentions ${state.playerName}'s shop—small spike in interest.`,
@@ -203,6 +191,12 @@
       footer(pick(lines, rng));
     }
   }
+  function renderTravelCosts(){
+    const cur = state ? state.location : 'hamilton';
+    const s = LOCATIONS.map(l => `${l.name}: ${fmt(travelCostFor(cur, l.id))}`).join(' | ');
+    gi('travelCosts').textContent = 'Travel Costs: ' + s;
+  }
+  function renderAll(msg){ renderStats(); renderMarket(); renderTravelCosts(); if(msg) log(msg); }
 
   // ---------- Economy ----------
   function capacityUsed(){ return Object.values(state.inv).reduce((a,b)=>a+b,0); }
@@ -237,11 +231,6 @@
     const r=mulberry32((state.day*2654435761 ^ h)>>>0)();
     return Math.floor(50 + r*100);
   }
-  function renderTravelCosts(){
-    const cur = state ? state.location : 'hamilton';
-    const s = LOCATIONS.map(l => `${l.name}: ${fmt(travelCostFor(cur, l.id))}`).join(' | ');
-    gi('travelCosts').textContent = 'Travel Costs: ' + s;
-  }
   gi('travelBtn').addEventListener('click', ()=>{
     const dest = gi('locationSelect').value;
     if(dest===state.location){ log('You are already there.','warn'); return; }
@@ -265,16 +254,13 @@
     if (state.day >= DAYS_LIMIT) { _endLock=false; return gameOver(); }
     const prev = state.day; state.day = prev + 1;
 
-    // finance effects
     if(state.debt>0){ const daily=state.rate/365; const inc=Math.floor(state.debt*daily); adjustDebt(+inc); if(inc>0) log(`Interest accrued ${fmt(inc)}.`,'warn'); }
     const storage = Math.floor(capacityUsed()*2); if(storage>0){ addCash(-storage); log(`Storage fees ${fmt(storage)}.`,'warn'); }
 
-    // build markets for the new day (all cities)
-    ensureMarketsForDay(state.day);
-    // fun random event line (already set in renderMarket via featured)
+    ensureMarketsForDay(state.day); // builds all cities for new day
     renderAll(`Day ${prev} → ${state.day} complete.`);
-
     if (state.day >= DAYS_LIMIT) log('Final day reached. Next press ends the game.','warn');
+
     setTimeout(()=>{ _endLock=false; }, 250);
   }
   gi('nextBtn').addEventListener('click', endDay);
@@ -287,7 +273,6 @@
     if(!confirm('Reset game?')) return;
     try{ localStorage.removeItem(SAVE_KEY); }catch(e){}
     state=null; DAYS_LIMIT=30;
-    // recreate overlay
     const ov=document.createElement('div');
     ov.id='startOverlay'; ov.className='overlay';
     ov.innerHTML = `<div class="panel" style="background:#171a21;padding:20px;border-radius:12px;text-align:center;border:1px solid #232735;min-width:320px">
