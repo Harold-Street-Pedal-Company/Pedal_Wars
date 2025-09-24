@@ -55,7 +55,6 @@
   let DAYS_LIMIT = 30;
   let state = null;
 
-  // per-day, per-city markets + global featured item ids
   function initState(playerName){
     return {
       playerName, day:1, location:'hamilton',
@@ -83,7 +82,7 @@
   function computeCityPricesForDay(day, locId, featuredIds){
     const loc = LOCATIONS.find(l=>l.id===locId)||LOCATIONS[0];
     const pr = priceRNG(day, locId);
-    const mood = 0.90 + pr()*0.30;   // city mood
+    const mood = 0.90 + pr()*0.30;
     const locBase = LOC_FACTOR[locId] || 1;
     const repBoost = 1 + (state ? state.rep*0.1 : 0);
     const out = {};
@@ -94,11 +93,10 @@
       base *= (0.92 + pr()*0.28);
       if (featuredIds.includes(it.id)) {
         const up = pr() < 0.65;
-        const mag = 0.40 + pr()*0.30; // 40–70%
+        const mag = 0.40 + pr()*0.30;
         base = base * (up ? (1+mag) : (1-mag));
       }
-      let price = Math.max(5, Math.round(base/repBoost));
-      out[it.id]=price;
+      out[it.id] = Math.max(5, Math.round(base/repBoost));
     });
     return out;
   }
@@ -219,55 +217,6 @@
     renderStats(); renderMarket();
   }
 
-  // ---------- NEW: Wire Borrow / Repay / SellAll / Dump ----------
-  function wireActionButtons(){
-    const borrowBtn = gi('borrowBtn');
-    const repayBtn  = gi('repayBtn');
-    const sellAllBtn= gi('sellAllBtn');
-    const dumpBtn   = gi('dumpBtn');
-
-    if (borrowBtn && !borrowBtn._pw) {
-      borrowBtn.addEventListener('click', ()=>{
-        adjustDebt(+500); addCash(+500);
-        log('Borrowed $500 at current APR.','warn'); renderStats();
-      }); borrowBtn._pw = 1;
-    }
-    if (repayBtn && !repayBtn._pw) {
-      repayBtn.addEventListener('click', ()=>{
-        if (state?.debt<=0) { log('No debt to repay.','warn'); return; }
-        if (state.cash<=0) { log('No cash to repay.','bad'); return; }
-        const pay = Math.min(500, state.debt, state.cash);
-        adjustDebt(-pay); addCash(-pay);
-        log('Repaid '+fmt(pay)+'.','good'); renderStats();
-      }); repayBtn._pw = 1;
-    }
-    if (sellAllBtn && !sellAllBtn._pw) {
-      sellAllBtn.addEventListener('click', ()=>{
-        let total=0, sold=false;
-        const prices = state.markets[state.day][state.location].prices;
-        for (const k in state.inv) {
-          const q = state.inv[k]; if (q>0) { total += q*(prices[k]||0); state.inv[k]=0; sold=true; }
-        }
-        if (!sold) { log('Nothing to sell.','warn'); return; }
-        const fee = (state.location==='reverb')?50:0;
-        const net = Math.max(0,total-fee);
-        addCash(net);
-        log('Quick sold everything for '+fmt(total)+(fee?' (−'+fmt(fee)+' fee)':'')+' → '+fmt(net)+' net.','good');
-        renderAll();
-      }); sellAllBtn._pw = 1;
-    }
-    if (dumpBtn && !dumpBtn._pw) {
-      dumpBtn.addEventListener('click', ()=>{
-        const owned = ITEMS.filter(it=> (state.inv[it.id]||0) > 0);
-        if (!owned.length) { log('You own nothing to dump.','warn'); return; }
-        const it = pick(owned, rng);
-        state.inv[it.id] -= 1;
-        log('Dumped 1 '+it.name+' to free space.','warn');
-        renderStats(); renderMarket();
-      }); dumpBtn._pw = 1;
-    }
-  }
-
   // ---------- Travel ----------
   function travelCostFor(origin, dest){
     if(origin === dest) return 0;
@@ -285,7 +234,7 @@
     const from=LOCATIONS.find(l=>l.id===state.location).name; const to=LOCATIONS.find(l=>l.id===dest).name;
     if(dest!=='reverb') state.lastCity = dest;
     state.location = dest;
-    ensureMarketsForDay(state.day); // show dest’s snapshot (no re-rolls today)
+    ensureMarketsForDay(state.day);
     log(`${state.playerName} traveled ${from} → ${to} (${cost?('cost '+fmt(cost)):'free'})`, cost?'warn':'good');
     renderAll();
   });
@@ -306,7 +255,7 @@
       const storage = Math.floor(capacityUsed()*2);
       if(storage>0){ addCash(-storage); log(`Storage fees ${fmt(storage)}.`,'warn'); }
 
-      ensureMarketsForDay(state.day);     // build all cities for the new day
+      ensureMarketsForDay(state.day);
       renderAll(`Day ${prev} → ${state.day} complete.`);
       if (state.day >= DAYS_LIMIT) log('Final day reached. Next press ends the game.','warn');
     } catch (e) {
@@ -329,6 +278,43 @@ Net Worth: ${fmt(net)}
 Reputation: ${Math.round(state.rep*100)}%
 Rank: ${grade}`);
   }
+
+  // ---------- Global delegated handlers for action buttons ----------
+  document.addEventListener('click', (e)=>{
+    const t = e.target && e.target.closest && e.target.closest('#borrowBtn,#repayBtn,#sellAllBtn,#dumpBtn');
+    if(!t) return;
+    if(!state){ log('Start a game first.', 'warn'); return; }
+    const id = t.id;
+    if(id==='borrowBtn'){
+      adjustDebt(+500); addCash(+500);
+      log('Borrowed $500 at current APR.','warn'); renderStats();
+    } else if(id==='repayBtn'){
+      if (state.debt<=0) { log('No debt to repay.','warn'); return; }
+      if (state.cash<=0) { log('No cash to repay.','bad'); return; }
+      const pay = Math.min(500, state.debt, state.cash);
+      adjustDebt(-pay); addCash(-pay);
+      log('Repaid '+fmt(pay)+'.','good'); renderStats();
+    } else if(id==='sellAllBtn'){
+      let total=0, sold=false;
+      const prices = state.markets[state.day][state.location].prices;
+      for (const k in state.inv) {
+        const q = state.inv[k]; if (q>0) { total += q*(prices[k]||0); state.inv[k]=0; sold=true; }
+      }
+      if (!sold) { log('Nothing to sell.','warn'); return; }
+      const fee = (state.location==='reverb')?50:0;
+      const net = Math.max(0,total-fee);
+      addCash(net);
+      log('Quick sold everything for '+fmt(total)+(fee?' (−'+fmt(fee)+' fee)':'')+' → '+fmt(net)+' net.','good');
+      renderAll();
+    } else if(id==='dumpBtn'){
+      const owned = ITEMS.filter(it=> (state.inv[it.id]||0) > 0);
+      if (!owned.length) { log('You own nothing to dump.','warn'); return; }
+      const it = pick(owned, rng);
+      state.inv[it.id] -= 1;
+      log('Dumped 1 '+it.name+' to free space.','warn');
+      renderStats(); renderMarket();
+    }
+  }, true);
 
   // ---------- Save/Load/Reset ----------
   const SAVE_KEY='pedalwars_save_v2';
@@ -381,12 +367,9 @@ Rank: ${grade}`);
     ensureMarketsForDay(state.day);
     renderAll('New game started.');
     renderTravelCosts();
-    wireActionButtons(); // <-- ensure action buttons are live after game starts
   }
 
   // ---------- Initial UI ----------
   renderTravelCosts();
-  // In case of load->render without start, wire buttons once the DOM is there
-  wireActionButtons();
   console.log('[Pedal Wars] bundle loaded');
 })();
